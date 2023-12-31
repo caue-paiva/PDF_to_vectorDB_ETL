@@ -1,7 +1,7 @@
 import os, qdrant_client
-from re import L
+from typing import Iterable
 from openai import OpenAI
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, VectorParams, PointStruct
 from dotenv import load_dotenv
 #código feito para carregar novos documentos na qdrant cloud
 load_dotenv(os.path.join("keys.env"))
@@ -11,6 +11,8 @@ openai_api_key = os.getenv('OPENAI_API_KEY') or 'OPENAI_API_KEY'
 embed_client = OpenAI()
 EMBEDDINGS_MODEL:str = 'text-embedding-ada-002'
 COLLECTION_NAME:str = os.getenv("QD_COLLECTION_NAME")
+OPENAI_VECTOR_PARAMS = VectorParams(size=1536, distance= Distance.COSINE, hnsw_config= None, quantization_config=None, on_disk=None)
+
 
 test_question:str = """(Enem/2020)  QUESTÃO 4          
 A Minor Bird
@@ -34,96 +36,98 @@ E)irritação quanto à persistência do canto do pássaro.
 (RESPOSTA CORRETA): D"""
 
 query_test:str = """
-me de uma questao sobre refugiados na nigeria 
+me de uma questao sobre No poema de Robert Frost, as palavras “fault” e “blame”
 """
 
-client = qdrant_client.QdrantClient(
+client2 = qdrant_client.QdrantClient(
      url=os.getenv("QDRANT_HOST"),
      api_key=os.getenv('QDRANT_API'), 
 )
- 
-"""client.recreate_collection(  #collection "enem2" já existe com 0 vetores de tam 384 
+
+def qdrant_recreate_collection(name:str, QDclient: qdrant_client.QdrantClient, parameters: VectorParams)->None:
+   client2.recreate_collection(  #collection "enem2" já existe com 0 vetores de tam 384 
         collection_name="enem2",
-        vectors_config= VectorParams(size=384, distance=Distance.COSINE),
-)"""
+        vectors_config=parameters
+    )
+ 
+def upsert_func(docs:list[list], QDclient: qdrant_client.QdrantClient)->None:
+    print("upsert")
+    QDclient.upsert(
+    collection_name= COLLECTION_NAME,
+    points= [
+        PointStruct(
+            id = idx,
+            vector = vector,
+            payload= {"texto":test_question, "materia": "eng", "ano": 2020}
+        )
+        for idx, vector in enumerate(docs,0)
+    ]
+    )
 
+def add_func(in_docs:list, in_metadata:dict, vector_count:int = 1)->None:
+  print("add")
+  in_docs = [in_docs]
+  in_metadata = [in_metadata]
+  client2.add(
+    collection_name= COLLECTION_NAME,
+    documents=  in_docs,
+    metadata=  in_metadata,
+    ids= [vector_count+1]
+  )
 
+def get_openAI_embeddings(text:str)->list[float]:
+    response = embed_client.embeddings.create(
+        input= text,
+        model= EMBEDDINGS_MODEL
+    )
+    return response.data[0].embedding
 
-
-
-#print(response)
-
-#print("\n\n")
-
-docs = [test_question]
-metadata = {"materia": "eng", "ano": 2020}
-
-
-
-
-#print(client.get_collection(COLLECTION_NAME))  #antes da primeira adição tinhamos 44 vectors na collection
-
-
-"""client.add(
-  collection_name= COLLECTION_NAME,
-  documents=  docs,
-  metadata= metadata,
-  ids= 1
-)"""
-
-#print(client.get_collection(COLLECTION_NAME))
-"""search = client.query(
+def vector_search(vector:list[float], QDclient)->list:
+   search = QDclient.search(
     collection_name=COLLECTION_NAME,
-    query_text=query_test,
+    query_vector = vector,
     limit=1
-)
+   )
 
-print (search)"""
+   return search
 
-"""client.upsert(
-  collection_name= COLLECTION_NAME,
-  points= [
-      PointStruct(
-          id = idx,
-          vector = vector,
-          payload= {"texto":test_question }
-      )
-      for idx, vector in enumerate(docs,48)
-  ]
-)"""
+def text_chunk_splitter(text:str, split_key:str)->Iterable[str]: #a split key vai ser (RESPOSTA CORRETA)
+   current_key_posi: int = 0
+   CORRECT_ALTERNATIVE_BUFF: int = 22  #tamanho da split key até a alternativa correta:  (RESPOSTA CORRETA): D
+   
+   while (next_key_posi := text.find(split_key, current_key_posi)) != -1:
+      str_slice:str = text[current_key_posi: next_key_posi + CORRECT_ALTERNATIVE_BUFF]
+      current_key_posi = next_key_posi + CORRECT_ALTERNATIVE_BUFF  #começar a procurar da posição atual + buffer
+      yield str_slice
+
+
+get_payload = lambda x : x[0].payload
+
+collection:object = client2.get_collection(COLLECTION_NAME)
+vector_count:int = collection.vectors_count
+
+print(vector_count)
+print(f"my collection:  {collection}")
+#metadata = {"materia": "eng", "ano": 2020}
+
+upsert_func([get_openAI_embeddings(test_question)], client2)
+
+
+#antes da primeira adição tinhamos 44 vectors na collection
+
+#print(client2.get_collection(COLLECTION_NAME))
+
+print(type(vector_search(get_openAI_embeddings(query_test),client2)))
 
 print("\n\n\n")
 
-print(client.get_collection(COLLECTION_NAME))
-
-#returned = client.query(
-   # collection_name= COLLECTION_NAME,   
-   # query_text= "testando",
-    #limit=2,
-#)
+#print(client.get_collection(COLLECTION_NAME))
 
 
-#print(returned)
-
-#vectors_config = qdrant_client.http.models.VectorParams(size=1536,distance = qdrant_client.http.models.Distance.COSINE)
-#configuração dos vetores, método de pesquisa (COSENO) e tamanho dos vetores (1536 é o tam usada pela openAI)
-
-
-#retur = client.recreate_collection(collection_name=os.getenv("QD_COLLECTION_NAME"), vectors_config=vectors_config)
-# essa linha de código serve para criar coleções do zero ou deletar existentes, cuidado ao mecher com ele
-
-"""doc_store = Qdrant(
-    client=client, 
-    collection_name=os.getenv("QD_COLLECTION_NAME"), 
-    embeddings=embed,
-)"""
-
-
-
+"""
 
 #adicionar docs para a vectorstore
-
-"""def text_chunks(text):
+def text_chunks(text):
     text_splitter = RecursiveCharacterTextSplitter(  #objeto de cortar textos do langchain
     chunk_size = 2200, #cada chunk de texto tem no máximo 2200 caracteres, melhor numero que eu testei ate agora
     #mudar entre linux e windows parece resultar em problemas no textspitter, no windows o melhor parece ser 1600 caracteres, e no linux 1800 caracteres
@@ -134,15 +138,14 @@ print(client.get_collection(COLLECTION_NAME))
     chunks = text_splitter.split_documents(text)
 
     return chunks
-"""
-"""loader = TextLoader("vector_DB_test/questoes_ling_redu.txt")  #carrega o arquivo txt à ser adicionado
+
+loader = TextLoader("vector_DB_test/questoes_ling_redu.txt")  #carrega o arquivo txt à ser adicionado
 documents = loader.load()
 
 parsed_text = text_chunks(documents)  #extrai pedaços do texto e coloca num array
 for i in range(len(parsed_text)):
     parsed_text[i] = parsed_text[i].page_content #extrai o texto em si, antes o texto estavo num obj langchain
-    print("\n\n nova questão "+parsed_text[i]+ "\n\n")
-"""
+
 
 #print(type(parsed_text[0]))
 #print(parsed_text[0])
@@ -156,10 +159,16 @@ for i in range(len(parsed_text)):
 #ultima vez deu que tinha 38 vectors
 
 
-"""def get_embeddings(text:str)->list[float]:
+def get_embeddings(text:str)->list[float]:
     response = embed_client.embeddings.create(
         input= test_question,
         model= EMBEDDINGS_MODEL
     )
     return response.data[0].embedding """
+
+#returned = client.query(
+   # collection_name= COLLECTION_NAME,   
+   # query_text= "testando",
+    #limit=2,
+#)
 
