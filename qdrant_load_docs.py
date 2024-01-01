@@ -3,7 +3,6 @@ import pandas as pd
 from typing import Iterable
 from openai import OpenAI
 from qdrant_client.models import Distance, VectorParams, PointStruct
-from qdrant_client.models import UpdateResult
 from dotenv import load_dotenv
 #código feito para carregar novos documentos na qdrant cloud
 load_dotenv(os.path.join("keys.env"))
@@ -103,7 +102,7 @@ def text_to_vectorDB(
       target_collection:str, 
       save_extraction_stats: bool = False,
       stats_csv_path: str = ""
-      )->None:
+    )->None:
   
     if ".txt" not in txt_file_path:
        raise IOError("essa função apenas aceita arquivos .TXT")
@@ -126,10 +125,10 @@ def text_to_vectorDB(
        raise IOError("Nome do arquivo não tem referencia à matéria das questões")
     else:  
         subject:str = matches_list_subj[0]
-    print(subject)
+
     collection:object = QDclient.get_collection(target_collection)
-    print(collection)
     vector_count:int = collection.vectors_count     #esse vai ser o id que o vetor a ser inserido vai ter, ele depende da quantidade de vetores já existentes
+    print(f"qntd inicial de vetores {vector_count}")
     start_amount: int = vector_count  #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vai ser a qntd de vetores ja existentes
     
     with open(txt_file_path, "r") as f:
@@ -170,14 +169,14 @@ def text_to_vectorDB(
        print("Não foi possível adicional todas as questões no vectorDB") 
 
 text_to_vectorDB(
-    txt_file_path="2020_D2_/2020_math_questions.txt", 
+    txt_file_path="2023_D1_/2023_spani_questions.txt", 
     QDclient=client2, 
     target_collection= COLLECTION_NAME,
     save_extraction_stats=True,
     stats_csv_path = "qdrant_extraction_data.csv"
 )
 
-print(client2.get_collection(COLLECTION_NAME))
+print( f"total de vetores depois {client2.get_collection(COLLECTION_NAME).vectors_count}")
 
 """print(QDvector_search(
    vector= get_openAI_embeddings("refugiado nigeriano"),
