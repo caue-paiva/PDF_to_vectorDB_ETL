@@ -1,5 +1,5 @@
 import os, qdrant_client, re
-from types import new_class
+import pandas as pd
 from typing import Iterable
 from openai import OpenAI
 from qdrant_client.models import Distance, VectorParams, PointStruct
@@ -8,6 +8,14 @@ from dotenv import load_dotenv
 #código feito para carregar novos documentos na qdrant cloud
 load_dotenv(os.path.join("keys.env"))
 
+"""
+Guarda metadados sobre quais arquivos ja foram add no vectorDB
+ja foram: 2020 eng (3) e espa (5) e humanas (34) (sem imagens) todas as qustões add
+
+solução usar o pandas para criar um CSV com as colunas sendo as matérias e as linhas sendo o ano e algo pra identificar se foram as add ou o total de questões do arquivo
+
+"""
+
 
 openai_api_key = os.getenv('OPENAI_API_KEY') or 'OPENAI_API_KEY'
 embed_client = OpenAI()
@@ -15,8 +23,9 @@ EMBEDDINGS_MODEL:str = 'text-embedding-ada-002'
 COLLECTION_NAME:str = os.getenv("QD_COLLECTION_NAME")
 OPENAI_VECTOR_PARAMS = VectorParams(size=1536, distance= Distance.COSINE, hnsw_config= None, quantization_config=None, on_disk=None)
 YEAR_PATTERN:str = "20\d{2}" #padrões REGEX para pegar o ano e a matéria de cada arquivo das questões
-SUBJECT_PATTERN: str = "_(.*?)_"
+SUBJECT_PATTERN: str = "_(.{3,}?)_" #padrão para achar a matéria da questão eng, lang, huma.....
 CORRECT_ANSWER_STR: str = "(RESPOSTA CORRETA)"
+SUBJECT_NAMES: set[str] = {"eng", "huma" , "lang", "spani","math", "natu"}
 
 
 client2 = qdrant_client.QdrantClient(
@@ -30,38 +39,6 @@ def qdrant_recreate_collection(name:str, QDclient: qdrant_client.QdrantClient, p
         vectors_config=parameters
     )
  
-"""def QD_upsert_func(text:str, 
-    vectors:list[list], 
-    QDclient: qdrant_client.QdrantClient, 
-    start_id: int ,
-    question_year:int,
-    question_subject:str,   
-    target_collection: str        
-)->None:
-    
-    QDclient.upsert(
-    collection_name= target_collection,
-    points= [
-        PointStruct(
-            id = idx,
-            vector = vector,
-                payload= {"page_content":text, "metadata": {"materia": question_subject, "ano": question_year}}
-        )
-        for idx, vector in enumerate(vectors,start_id)
-    ]
-    )"""
-
-def QDadd_func(in_docs:list, in_metadata:dict, vector_count:int = 1)->None:
-  print("add")
-  in_docs = [in_docs]
-  in_metadata = [in_metadata]
-  client2.add(
-    collection_name= COLLECTION_NAME,
-    documents=  in_docs,
-    metadata=  in_metadata,
-    ids= [vector_count+1]
-  )
-
 def get_openAI_embeddings(text:str)->list[float]:
     response = embed_client.embeddings.create(
         input= text,
@@ -89,7 +66,44 @@ def text_chunk_splitter(text:str, split_key:str)->Iterable[str]: #a split key va
       current_key_posi = next_key_posi + CORRECT_ALTERNATIVE_BUFF  #começar a procurar da posição atual + buffer
       yield str_slice
 
-def text_to_vectorDB(txt_file_path:str, QDclient:qdrant_client.QdrantClient, target_collection:str)->None:
+def etl_metadata_saving(
+      stats_csv_path:str, 
+      current_year:int, 
+      subject: str, 
+      all_questions:int,
+      added_questions:int
+    )->None:
+   
+    if ".csv" not in stats_csv_path:
+      raise IOError("Arquivo não é do tipo CSV")
+    
+    ALL_QUESTIONS_INDEX: str = f"{current_year} todas questoes" #esses vão ser o nome dos indexes (linhas) do DF para guardar os valores do total de questões de um arquivo e do total add desse arqui
+    ADDED_QUESTIONS_INDEX: str = f"{current_year} questoes add"
+
+    if os.path.exists(stats_csv_path):
+      df = pd.read_csv(stats_csv_path, index_col= 0)
+    else:
+      df = pd.DataFrame()
+    
+    if subject not in df.columns:
+      df[subject] = None
+    
+    if ALL_QUESTIONS_INDEX not in df.index:
+       df.loc[ALL_QUESTIONS_INDEX] = None
+       df.loc[ADDED_QUESTIONS_INDEX] = None
+    
+    df.at[ALL_QUESTIONS_INDEX, subject] = all_questions
+    df.at[ADDED_QUESTIONS_INDEX, subject] = added_questions
+
+    df.to_csv(stats_csv_path, index=True)
+
+def text_to_vectorDB(
+      txt_file_path:str, 
+      QDclient:qdrant_client.QdrantClient, 
+      target_collection:str, 
+      save_extraction_stats: bool = False,
+      stats_csv_path: str = ""
+      )->None:
   
     if ".txt" not in txt_file_path:
        raise IOError("essa função apenas aceita arquivos .TXT")
@@ -100,16 +114,19 @@ def text_to_vectorDB(txt_file_path:str, QDclient:qdrant_client.QdrantClient, tar
     if not isinstance(QDclient,qdrant_client.QdrantClient):
         raise TypeError("Argumento do cliente do Qdrant não é do tipo suportadp")
  
-    if not (matches_list_year := re.findall(YEAR_PATTERN,txt_file_path)):
+    backslash_index: int = txt_file_path.rfind("/") #vai da direita pra esquerda até ahcar o primeiro / , isso é para isolar apenas o nome do arquivo no path e permitir achar a matéria
+    file_str:str = txt_file_path[backslash_index+1 : len(txt_file_path)]
+
+    if not (matches_list_year := re.findall(YEAR_PATTERN,file_str)):
        raise IOError("Nome do arquivo não tem referencia ao ano da prova")
     else:
        test_year: int = int(matches_list_year[0])
     
-    if not (matches_list_subj := re.findall(SUBJECT_PATTERN, txt_file_path)):
+    if not (matches_list_subj := re.findall(SUBJECT_PATTERN, file_str)):
        raise IOError("Nome do arquivo não tem referencia à matéria das questões")
     else:  
         subject:str = matches_list_subj[0]
-
+    print(subject)
     collection:object = QDclient.get_collection(target_collection)
     print(collection)
     vector_count:int = collection.vectors_count     #esse vai ser o id que o vetor a ser inserido vai ter, ele depende da quantidade de vetores já existentes
@@ -138,28 +155,41 @@ def text_to_vectorDB(txt_file_path:str, QDclient:qdrant_client.QdrantClient, tar
 
     final_vector_count: int  = QDclient.get_collection(target_collection).vectors_count #mudança na qntd de vetores no vector db
     questions_added: int = final_vector_count - start_amount
-    print(f"Foram inseridas  {questions_added} questões no vectorDB")     
+    print(f"Foram inseridas  {questions_added} questões no vectorDB")   
+
+    if save_extraction_stats:
+        etl_metadata_saving(
+           stats_csv_path=stats_csv_path,
+           current_year= test_year,
+           subject= subject,
+           all_questions= all_new_questions,
+           added_questions= questions_added 
+        )  
 
     if all_new_questions !=  questions_added:
        print("Não foi possível adicional todas as questões no vectorDB") 
 
-#text_to_vectorDB("2020_D1_/2020_spani_questions.txt", client2, COLLECTION_NAME)
+text_to_vectorDB(
+    txt_file_path="2020_D2_/2020_math_questions.txt", 
+    QDclient=client2, 
+    target_collection= COLLECTION_NAME,
+    save_extraction_stats=True,
+    stats_csv_path = "qdrant_extraction_data.csv"
+)
 
-print(QDvector_search(
+print(client2.get_collection(COLLECTION_NAME))
+
+"""print(QDvector_search(
    vector= get_openAI_embeddings("refugiado nigeriano"),
    QDclient= client2,
    target_collection=COLLECTION_NAME
-))
+))"""
 
 
 #get_payload = lambda x : x[0].payload
 #collection:object = client2.get_collection(COLLECTION_NAME)
 #vector_count:int = collection.vectors_count
-#print(vector_count)
-#print(f"my collection:  {collection}")
-#metadata = {"materia": "eng", "ano": 2020}
 
-#upsert_func(test_question, [get_openAI_embeddings(test_question)], client2,vector_count)
 #collection:object = client2.get_collection(COLLECTION_NAME)
 
 #antes da primeira adição tinhamos 44 vectors na collection
@@ -220,3 +250,34 @@ def get_embeddings(text:str)->list[float]:
     #limit=2,
 #)
 
+"""def QD_upsert_func(text:str, 
+    vectors:list[list], 
+    QDclient: qdrant_client.QdrantClient, 
+    start_id: int ,
+    question_year:int,
+    question_subject:str,   
+    target_collection: str        
+)->None:
+    
+    QDclient.upsert(
+    collection_name= target_collection,
+    points= [
+        PointStruct(
+            id = idx,
+            vector = vector,
+                payload= {"page_content":text, "metadata": {"materia": question_subject, "ano": question_year}}
+        )
+        for idx, vector in enumerate(vectors,start_id)
+    ]
+    )"""
+
+"""def QDadd_func(in_docs:list, in_metadata:dict, vector_count:int = 1)->None:
+  print("add")
+  in_docs = [in_docs]
+  in_metadata = [in_metadata]
+  client2.add(
+    collection_name= COLLECTION_NAME,
+    documents=  in_docs,
+    metadata=  in_metadata,
+    ids= [vector_count+1]
+  )"""
