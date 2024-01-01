@@ -8,10 +8,17 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join("keys.env"))
 
 """
+TODO
+fazer um arquivo/função de ETL, que extraia o PDF e carregue no vectorDB 
+
+
+
 Guarda metadados sobre quais arquivos ja foram add no vectorDB
 ja foram: 2020 eng (3) e espa (5) e humanas (34) (sem imagens) todas as qustões add
 
 solução usar o pandas para criar um CSV com as colunas sendo as matérias e as linhas sendo o ano e algo pra identificar se foram as add ou o total de questões do arquivo
+
+
 
 """
 
