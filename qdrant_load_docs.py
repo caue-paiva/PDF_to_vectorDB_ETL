@@ -5,7 +5,6 @@ from openai import OpenAI
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from dotenv import load_dotenv
 #código feito para carregar novos documentos na qdrant cloud
-load_dotenv(os.path.join("keys.env"))
 
 """
 TODO
@@ -22,168 +21,213 @@ solução usar o pandas para criar um CSV com as colunas sendo as matérias e as
 
 """
 
-
-openai_api_key = os.getenv('OPENAI_API_KEY') or 'OPENAI_API_KEY'
-embed_client = OpenAI()
-EMBEDDINGS_MODEL:str = 'text-embedding-ada-002'
-COLLECTION_NAME:str = os.getenv("QD_COLLECTION_NAME")
-OPENAI_VECTOR_PARAMS = VectorParams(size=1536, distance= Distance.COSINE, hnsw_config= None, quantization_config=None, on_disk=None)
-YEAR_PATTERN:str = "20\d{2}" #padrões REGEX para pegar o ano e a matéria de cada arquivo das questões
-SUBJECT_PATTERN: str = "_(.{3,}?)_" #padrão para achar a matéria da questão eng, lang, huma.....
-CORRECT_ANSWER_STR: str = "(RESPOSTA CORRETA)"
-SUBJECT_NAMES: set[str] = {"eng", "huma" , "lang", "spani","math", "natu"}
+load_dotenv(os.path.join("keys.env"))
+openai_api_key = os.getenv('OPENAI_API_KEY') or 'OPENAI_API_KEY'  #ver se isso pode ficar como var global nesse arquivo ou se precisa ser uma variável da classe
 
 
-client2 = qdrant_client.QdrantClient(
+client = qdrant_client.QdrantClient(
      url=os.getenv("QDRANT_HOST"),
      api_key=os.getenv('QDRANT_API'), 
 )
-
-def qdrant_recreate_collection(name:str, QDclient: qdrant_client.QdrantClient, parameters: VectorParams)->None:
-   client2.recreate_collection(  #collection "enem2" já existe com 0 vetores de tam 384 
-        collection_name="enem2",
-        vectors_config=parameters
-    )
- 
-def get_openAI_embeddings(text:str)->list[float]:
-    response = embed_client.embeddings.create(
-        input= text,
-        model= EMBEDDINGS_MODEL
-    )
-    return response.data[0].embedding
-
-def QDvector_search(vector:list[float], QDclient :qdrant_client.QdrantClient, target_collection:str , vector_num:int = 1)->list:
-   search = QDclient.search(
-    collection_name=target_collection,
-    query_vector = vector,
-    limit= vector_num
-   )
-   return search
-
-def text_chunk_splitter(text:str, split_key:str)->Iterable[str]: #a split key vai ser (RESPOSTA CORRETA)
-   """
-   Iterador que retorna a proxima substr que corresponde a uma questão inteira
-   """
-   current_key_posi: int = 0
-   CORRECT_ALTERNATIVE_BUFF: int = 22  #tamanho da split key até a alternativa correta:  (RESPOSTA CORRETA): D
-   
-   while (next_key_posi := text.find(split_key, current_key_posi)) != -1:
-      str_slice:str = text[current_key_posi: next_key_posi + CORRECT_ALTERNATIVE_BUFF]
-      current_key_posi = next_key_posi + CORRECT_ALTERNATIVE_BUFF  #começar a procurar da posição atual + buffer
-      yield str_slice
-
-def etl_metadata_saving(
-      stats_csv_path:str, 
-      current_year:int, 
-      subject: str, 
-      all_questions:int,
-      added_questions:int
-    )->None:
-   
-    if ".csv" not in stats_csv_path:
-      raise IOError("Arquivo não é do tipo CSV")
+class QdrantTextLoader:
     
-    ALL_QUESTIONS_INDEX: str = f"{current_year} todas questoes" #esses vão ser o nome dos indexes (linhas) do DF para guardar os valores do total de questões de um arquivo e do total add desse arqui
-    ADDED_QUESTIONS_INDEX: str = f"{current_year} questoes add"
+    __OPENAI_VECTOR_PARAMS = VectorParams(size=1536, distance= Distance.COSINE, hnsw_config= None, quantization_config=None, on_disk=None)
+    __YEAR_PATTERN:str = "20\d{2}" #padrões REGEX para pegar o ano e a matéria de cada arquivo das questões
+    __SUBJECT_PATTERN: str = "_(.{3,}?)_" #padrão para achar a matéria da questão eng, lang, huma.....
+    __CORRECT_ANSWER_STR: str = "(RESPOSTA CORRETA)"
+    __SUBJECT_NAMES: set[str] = {"eng", "huma" , "lang", "spani","math", "natu"}  
+    __EMBEDDINGS_MODEL:str = 'text-embedding-ada-002'
 
-    if os.path.exists(stats_csv_path):
-      df = pd.read_csv(stats_csv_path, index_col= 0)
-    else:
-      df = pd.DataFrame()
-    
-    if subject not in df.columns:
-      df[subject] = None
-    
-    if ALL_QUESTIONS_INDEX not in df.index:
-       df.loc[ALL_QUESTIONS_INDEX] = None
-       df.loc[ADDED_QUESTIONS_INDEX] = None
-    
-    df.at[ALL_QUESTIONS_INDEX, subject] = all_questions
-    df.at[ADDED_QUESTIONS_INDEX, subject] = added_questions
 
-    df.to_csv(stats_csv_path, index=True)
+    collection_name: str
+    QDclient: qdrant_client.QdrantClient
+    vector_count:int 
 
-def text_to_vectorDB(
-      txt_file_path:str, 
-      QDclient:qdrant_client.QdrantClient, 
-      target_collection:str, 
-      save_extraction_stats: bool = False,
-      stats_csv_path: str = ""
-    )->None:
-  
-    if ".txt" not in txt_file_path:
-       raise IOError("essa função apenas aceita arquivos .TXT")
-
-    if not isinstance(txt_file_path, str):
-        raise TypeError("path para o arquivo não é uma string")
-
-    if not isinstance(QDclient,qdrant_client.QdrantClient):
-        raise TypeError("Argumento do cliente do Qdrant não é do tipo suportadp")
- 
-    backslash_index: int = txt_file_path.rfind("/") #vai da direita pra esquerda até ahcar o primeiro / , isso é para isolar apenas o nome do arquivo no path e permitir achar a matéria
-    file_str:str = txt_file_path[backslash_index+1 : len(txt_file_path)]
-
-    if not (matches_list_year := re.findall(YEAR_PATTERN,file_str)):
-       raise IOError("Nome do arquivo não tem referencia ao ano da prova")
-    else:
-       test_year: int = int(matches_list_year[0])
-    
-    if not (matches_list_subj := re.findall(SUBJECT_PATTERN, file_str)):
-       raise IOError("Nome do arquivo não tem referencia à matéria das questões")
-    else:  
-        subject:str = matches_list_subj[0]
-
-    collection:object = QDclient.get_collection(target_collection)
-    vector_count:int = collection.vectors_count     #esse vai ser o id que o vetor a ser inserido vai ter, ele depende da quantidade de vetores já existentes
-    print(f"qntd inicial de vetores {vector_count}")
-    start_amount: int = vector_count  #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vai ser a qntd de vetores ja existentes
-    
-    with open(txt_file_path, "r") as f:
-        entire_text: str = f.read()
-
-    for text_chunk in text_chunk_splitter(entire_text, CORRECT_ANSWER_STR):  #
-        vectors:list[list[float]] =  [get_openAI_embeddings(text_chunk)]
+    def __init__(self, collection_name:str, QDclient: qdrant_client.QdrantClient)->None:
+        if not isinstance(QDclient,qdrant_client.QdrantClient):
+            raise TypeError("Argumento do cliente do Qdrant não é do tipo suportado")
         
-        QDclient.upsert(
-            collection_name= target_collection,
-            points= [
-             PointStruct(
-               id = idx,
-               vector = vector,
-               payload= {"page_content":text_chunk, "metadata": {"materia": subject, "ano": test_year}}
-             )
-            for idx, vector in enumerate(vectors,vector_count)] 
+        self.collection_name = collection_name
+        self.QDclient =  QDclient
+
+        try:
+           collection = self.QDclient.get_collection(self.collection_name)
+           self.vector_count = collection.vectors_count
+
+        except Exception as e:
+           if isinstance(e, qdrant_client.http.exceptions.UnexpectedResponse ):
+              print("coleção não existe, tentando criar uma nova")
+            
+              if self.__qdrant_create_collection():
+                  self.vector_count = 0
+                  print("nova coleção criada")
+              else:
+                raise Exception("Não foi possível criar uma nova coleção")
+
+    def __qdrant_create_collection(self)->bool:
+        return self.QDclient.create_collection( 
+            collection_name= self.collection_name,
+            vectors_config=self.__OPENAI_VECTOR_PARAMS
         )
-        vector_count += 1
     
-    all_new_questions: int = vector_count - start_amount
-    print(f"Tentou inserir {all_new_questions} questões no vectorDB") #quantidade de novas questões
+    def __get_openAI_embeddings(self,text:str)->list[float]:
+        response = OpenAI.embeddings.create(
+            input= text,
+            model= self.__EMBEDDINGS_MODEL
+        )
+        return response.data[0].embedding
 
-    final_vector_count: int  = QDclient.get_collection(target_collection).vectors_count #mudança na qntd de vetores no vector db
-    questions_added: int = final_vector_count - start_amount
-    print(f"Foram inseridas  {questions_added} questões no vectorDB")   
+    def QDvector_search(self, vector:list[float], vector_num:int = 1)->list:
+        """
+        Função para realizar uma busca por vetores dentro da coleção da instância da classe
+        
+        Args:
+           vector (list[float]) : um vetor de embeddings do tipo da openAI, vão ser buscados outros vetores similar a esse
+           vector_num (opcional, por padrão =1 ) (int) : o número de vetores que vão ser retornados
+        
+        Retorno: 
+            Lista de vetores (parte númerica , payload e metadados) retornados 
+        """
+        
 
-    if save_extraction_stats:
-        etl_metadata_saving(
-           stats_csv_path=stats_csv_path,
-           current_year= test_year,
-           subject= subject,
-           all_questions= all_new_questions,
-           added_questions= questions_added 
-        )  
+        """
+        TODO
+        fazer checagem se os vetores de input são os da openAI
+        """
+        search = self.QDclient.search(
+          collection_name=self.collection_name,
+          query_vector = vector,
+          limit= vector_num
+        )
+        return search
 
-    if all_new_questions !=  questions_added:
-       print("Não foi possível adicional todas as questões no vectorDB") 
+    def __text_chunk_splitter(text:str, split_key:str)->Iterable[str]: #a split key vai ser (RESPOSTA CORRETA)
+        """
+        Iterador que retorna a proxima substr que corresponde a uma questão inteira
+        """
+        current_key_posi: int = 0
+        CORRECT_ALTERNATIVE_BUFF: int = 22  #tamanho da split key até a alternativa correta:  (RESPOSTA CORRETA): D
+        
+        while (next_key_posi := text.find(split_key, current_key_posi)) != -1:
+            str_slice:str = text[current_key_posi: next_key_posi + CORRECT_ALTERNATIVE_BUFF]
+            current_key_posi = next_key_posi + CORRECT_ALTERNATIVE_BUFF  #começar a procurar da posição atual + buffer
+            yield str_slice
 
-text_to_vectorDB(
-    txt_file_path="2023_D1_/2023_spani_questions.txt", 
+    def __etl_metadata_saving(
+        self,
+        stats_csv_path:str, 
+        current_year:int, 
+        subject: str, 
+        all_questions:int,
+        added_questions:int
+        )->None:
+    
+        if ".csv" not in stats_csv_path:
+         raise IOError("Arquivo não é do tipo CSV")
+        
+        ALL_QUESTIONS_INDEX: str = f"{current_year} todas questoes" #esses vão ser o nome dos indexes (linhas) do DF para guardar os valores do total de questões de um arquivo e do total add desse arqui
+        ADDED_QUESTIONS_INDEX: str = f"{current_year} questoes add"
+
+        if os.path.exists(stats_csv_path):
+          df = pd.read_csv(stats_csv_path, index_col= 0)
+        else:
+          df = pd.DataFrame()
+        
+        if subject not in df.columns:
+           df[subject] = None
+        
+        if ALL_QUESTIONS_INDEX not in df.index:
+            df.loc[ALL_QUESTIONS_INDEX] = None
+            df.loc[ADDED_QUESTIONS_INDEX] = None
+            
+            df.at[ALL_QUESTIONS_INDEX, subject] = all_questions
+            df.at[ADDED_QUESTIONS_INDEX, subject] = added_questions
+
+            df.to_csv(stats_csv_path, index=True)
+
+    def text_to_vectorDB(
+        self,
+        txt_file_path:str, 
+        QDclient:qdrant_client.QdrantClient, 
+        target_collection:str, 
+        save_extraction_stats: bool = False,
+        stats_csv_path: str = ""
+        )->None:
+    
+        if ".txt" not in txt_file_path:
+            raise IOError("essa função apenas aceita arquivos .TXT")
+
+        if not isinstance(txt_file_path, str):
+            raise TypeError("path para o arquivo não é uma string")
+
+        if not isinstance(QDclient,qdrant_client.QdrantClient):
+            raise TypeError("Argumento do cliente do Qdrant não é do tipo suportado")
+    
+        backslash_index: int = txt_file_path.rfind("/") #vai da direita pra esquerda até ahcar o primeiro / , isso é para isolar apenas o nome do arquivo no path e permitir achar a matéria
+        file_str:str = txt_file_path[backslash_index+1 : len(txt_file_path)]
+
+        if not (matches_list_year := re.findall(self.__YEAR_PATTERN,file_str)):
+             raise IOError("Nome do arquivo não tem referencia ao ano da prova")
+        else:
+             test_year: int = int(matches_list_year[0])
+        
+        if not (matches_list_subj := re.findall(self.__SUBJECT_PATTERN, file_str)):
+          raise IOError("Nome do arquivo não tem referencia à matéria das questões")
+        else:  
+            subject:str = matches_list_subj[0]
+
+        collection:object = QDclient.get_collection(target_collection)
+        vector_count:int = collection.vectors_count     #esse vai ser o id que o vetor a ser inserido vai ter, ele depende da quantidade de vetores já existentes
+        print(f"qntd inicial de vetores {vector_count}")
+        start_amount: int = vector_count  #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vai ser a qntd de vetores ja existentes
+        
+        with open(txt_file_path, "r") as f:
+            entire_text: str = f.read()
+
+        for text_chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR):  #
+            vectors:list[list[float]] =  [self.__get_openAI_embeddings(text_chunk)]
+            
+            QDclient.upsert(
+                collection_name= target_collection,
+                points= [
+                PointStruct(
+                id = idx,
+                vector = vector,
+                payload= {"page_content":text_chunk, "metadata": {"materia": subject, "ano": test_year}}
+                )
+                for idx, vector in enumerate(vectors,vector_count)] 
+            )
+            vector_count += 1
+        
+        all_new_questions: int = vector_count - start_amount
+        print(f"Tentou inserir {all_new_questions} questões no vectorDB") #quantidade de novas questões
+
+        final_vector_count: int  = QDclient.get_collection(target_collection).vectors_count #mudança na qntd de vetores no vector db
+        questions_added: int = final_vector_count - start_amount
+        print(f"Foram inseridas  {questions_added} questões no vectorDB")   
+
+        if save_extraction_stats:
+            self.__etl_metadata_saving(
+            stats_csv_path=stats_csv_path,
+            current_year= test_year,
+            subject= subject,
+            all_questions= all_new_questions,
+            added_questions= questions_added 
+            )  
+
+        if all_new_questions !=  questions_added:
+            print("Não foi possível adicional todas as questões no vectorDB") 
+
+"""text_to_vectorDB(
+    txt_file_path= "2023_D1_/2023_spani_questions.txt", 
     QDclient=client2, 
     target_collection= COLLECTION_NAME,
     save_extraction_stats=True,
     stats_csv_path = "qdrant_extraction_data.csv"
 )
+"""
+print( f"total de vetores depois {client.get_collection(COLLECTION_NAME).vectors_count}")
 
-print( f"total de vetores depois {client2.get_collection(COLLECTION_NAME).vectors_count}")
 
 """print(QDvector_search(
    vector= get_openAI_embeddings("refugiado nigeriano"),
