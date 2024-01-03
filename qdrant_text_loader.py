@@ -1,3 +1,4 @@
+from ast import Raise
 import os, qdrant_client, re
 import pandas as pd
 from typing import Iterable
@@ -9,26 +10,7 @@ from dotenv import load_dotenv
 """
 TODO
 fazer um arquivo/função de ETL, que extraia o PDF e carregue no vectorDB 
-
-
-
-Guarda metadados sobre quais arquivos ja foram add no vectorDB
-ja foram: 2020 eng (3) e espa (5) e humanas (34) (sem imagens) todas as qustões add
-
-solução usar o pandas para criar um CSV com as colunas sendo as matérias e as linhas sendo o ano e algo pra identificar se foram as add ou o total de questões do arquivo
-
-
-
 """
-
-"""load_dotenv(os.path.join("keys.env"))
-openai_api_key = os.getenv('OPENAI_API_KEY') or 'OPENAI_API_KEY'  #ver se isso pode ficar como var global nesse arquivo ou se precisa ser uma variável da classe
-
-
-client = qdrant_client.QdrantClient(
-     url=os.getenv("QDRANT_HOST"),
-     api_key=os.getenv('QDRANT_API'), 
-)"""
 
 
 class QdrantTextLoader:
@@ -45,6 +27,7 @@ class QdrantTextLoader:
     __SUBJECT_PATTERN: str = "_(.{3,}?)_" #padrão para achar a matéria da questão eng, lang, huma.....
     __CORRECT_ANSWER_STR: str = "(RESPOSTA CORRETA)"
     __EMBEDDINGS_MODEL:str = "text-embedding-ada-002"
+    __QUESTION_SUBJECTS: set[str] = {"eng", "lang", "spani", "natu", "math"}
 
     collection_name: str
     QDclient: qdrant_client.QdrantClient
@@ -164,7 +147,7 @@ class QdrantTextLoader:
  
         df.to_csv(stats_csv_path, index=True)
 
-    def text_to_vectorDB(self, txt_file_path:str, save_extraction_stats: bool = False , stats_csv_path: str = "")->None:
+    def file_to_vectorDB(self,  txt_file_path:str, save_extraction_stats: bool = False , stats_csv_path: str = "")->None:
         
         if ".txt" not in txt_file_path:
             raise IOError("essa função apenas aceita arquivos .TXT")
@@ -178,15 +161,15 @@ class QdrantTextLoader:
         backslash_index: int = txt_file_path.rfind("/") #vai da direita pra esquerda até ahcar o primeiro / , isso é para isolar apenas o nome do arquivo no path e permitir achar a matéria
         file_str:str = txt_file_path[backslash_index+1 : len(txt_file_path)]
 
-        if not (matches_list_year := re.findall(self.__YEAR_PATTERN,file_str)):
+        if not (year_matches_list := re.findall(self.__YEAR_PATTERN , file_str)):
              raise IOError("Nome do arquivo não tem referencia ao ano da prova")
         else:
-             test_year: int = int(matches_list_year[0])
+             test_year: int = int(year_matches_list[0])
         
-        if not (matches_list_subj := re.findall(self.__SUBJECT_PATTERN, file_str)):
+        if not (subject_matches_list := re.findall(self.__SUBJECT_PATTERN, file_str)):
           raise IOError("Nome do arquivo não tem referencia à matéria das questões")
         else:  
-            subject:str = matches_list_subj[0]
+            subject:str = subject_matches_list[0]
 
         print(f"qntd inicial de vetores {self.vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
 
@@ -196,20 +179,21 @@ class QdrantTextLoader:
             entire_text: str = f.read()
 
         text_and_embedings : dict[str,list[float]] = {chunk : self.__get_openAI_embeddings(chunk) for chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR)}
+        #dict comprehension para gerar um dict com os pedaços de texto das questões como key e os seus embeddings como values
 
-        self.QDclient.upsert(
+        self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
                 collection_name= self.collection_name,
-                points= [
+                points= [ #varios objetos da classe de pontos são instanciadas, cada uma com os keys e values do dicionário de text e embeddings
                     PointStruct(
                       id = idx,
                       vector = text_and_embedings[text_chunk],
                       payload= {"page_content":text_chunk, "metadata": {"materia": subject, "ano": test_year}}
                     )
-                for idx, text_chunk in enumerate(text_and_embedings , self.vector_count)
+                for idx, text_chunk in enumerate(text_and_embedings , self.vector_count)  
                 ] 
-            )
+        )
         
-        self.vector_count += len(text_and_embedings)
+        self.vector_count += len(text_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
    
         all_new_questions: int = self.vector_count - start_amount
         print(f"Tentou inserir {all_new_questions} questões no vectorDB") #quantidade de novas questões que eram para ser adicionadas
@@ -232,119 +216,64 @@ class QdrantTextLoader:
         if all_new_questions !=  questions_added:
             print("Não foi possível adicionar todas as questões no vectorDB") 
 
-"""text_to_vectorDB(
-    txt_file_path= "2023_D1_/2023_spani_questions.txt", 
-    QDclient=client2, 
-    target_collection= COLLECTION_NAME,
-    save_extraction_stats=True,
-    stats_csv_path = "qdrant_extraction_data.csv"
-)
-"""
-#print( f"total de vetores depois {client.get_collection(COLLECTION_NAME).vectors_count}")
+    def dict_to_vectorDB(self, subjects_and_questions: dict[str,str] ,save_extraction_stats: bool = False , stats_csv_path: str = "" )->None:
+        """
+        Função que recebe um dicionário de matérias do ENEM e questões associadas e o ano da prova e carrega elas num vector DB
+        """
 
+        if not isinstance(subjects_and_questions, dict[str,str]):
+            raise TypeError("variável de input não é um dicionário do tipo { str: str }")
+        
+        if not subjects_and_questions.get("test_year"):
+            raise IOError("dicionário não contem o ano do teste")
+                
+        test_year: int = int(subjects_and_questions.pop("test_year"))
 
-"""print(QDvector_search(
-   vector= get_openAI_embeddings("refugiado nigeriano"),
-   QDclient= client2,
-   target_collection=COLLECTION_NAME
-))"""
+        for subject in  subjects_and_questions:
+            if subject not in self.__QUESTION_SUBJECTS:
+                raise IOError("o dicionário contém matérias não suportadas")
+            
+        print(f"qntd inicial de vetores {self.vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
+        #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vetor vai ser a qntd de vetores ja existentes
+       
+        for subject in subjects_and_questions:
+            start_amount: int = self.vector_count #atualiza a qntd de vetores inicial 
+            
+            entire_text: str = subjects_and_questions[subject]
+            questions_and_embedings : dict[str,list[float]] = {chunk : self.__get_openAI_embeddings(chunk) for chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR)}
+            
+            self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
+                collection_name= self.collection_name,
+                points= [ #varios objetos da classe de pontos são instanciadas, cada uma com os keys e values do dicionário de text e embeddings
+                    PointStruct(
+                      id = idx,
+                      vector = questions_and_embedings[question],
+                      payload= {"page_content": question, "metadata": {"materia": subject, "ano": test_year}}
+                    )
+                for idx, question in enumerate(questions_and_embedings , self.vector_count)  
+                ] 
+            )   
+            self.vector_count += len(questions_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
+        
+            all_new_questions: int = self.vector_count - start_amount
+            print(f"Tentou inserir {all_new_questions} questões do assunto {subject} no vectorDB") #quantidade de novas questões que eram para ser adicionadas
 
-
-#get_payload = lambda x : x[0].payload
-#collection:object = client2.get_collection(COLLECTION_NAME)
-#vector_count:int = collection.vectors_count
-
-#collection:object = client2.get_collection(COLLECTION_NAME)
-
-#antes da primeira adição tinhamos 44 vectors na collection
-
-#print(client2.get_collection(COLLECTION_NAME))
-
-#print(client.get_collection(COLLECTION_NAME))
-
-#extract_text("2020_D1_/2020_huma_questions.txt")
-
-
-
-"""
-
-"""
-"""
-#adicionar docs para a vectorstore
-def text_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(  #objeto de cortar textos do langchain
-    chunk_size = 2200, #cada chunk de texto tem no máximo 2200 caracteres, melhor numero que eu testei ate agora
-    #mudar entre linux e windows parece resultar em problemas no textspitter, no windows o melhor parece ser 1600 caracteres, e no linux 1800 caracteres
-    chunk_overlap  = 0,
-    separators=["(Enem/"]  #divide partes do texto ao encontrar essa string, agrupa pedaços de texto entre a occorrencia dessa string
-    )
-
-    chunks = text_splitter.split_documents(text)
-
-    return chunks
-
-loader = TextLoader("vector_DB_test/questoes_ling_redu.txt")  #carrega o arquivo txt à ser adicionado
-documents = loader.load()
-
-parsed_text = text_chunks(documents)  #extrai pedaços do texto e coloca num array
-for i in range(len(parsed_text)):
-    parsed_text[i] = parsed_text[i].page_content #extrai o texto em si, antes o texto estavo num obj langchain
-
-
-#print(type(parsed_text[0]))
-#print(parsed_text[0])
-
-#print(doc_store.add_texts(parsed_text)) #adiciona os novos pedaços de texto na doc_store, printar os vetores de return para verificar se deu certo
-
-
-#print(client.get_collection(collection_name=os.getenv("QD_COLLECTION_NAME")))
-#ver a coleção atual e ver se os novos vetores foram realmente adicionados
-
-#ultima vez deu que tinha 38 vectors
-
-
-def get_embeddings(text:str)->list[float]:
-    response = embed_client.embeddings.create(
-        input= test_question,
-        model= EMBEDDINGS_MODEL
-    )
-    return response.data[0].embedding 
-
-#returned = client.query(
-   # collection_name= COLLECTION_NAME,   
-   # query_text= "testando",
-    #limit=2,
-#)
-"""
-
-"""def QD_upsert_func(text:str, 
-    vectors:list[list], 
-    QDclient: qdrant_client.QdrantClient, 
-    start_id: int ,
-    question_year:int,
-    question_subject:str,   
-    target_collection: str        
-)->None:
-    
-    QDclient.upsert(
-    collection_name= target_collection,
-    points= [
-        PointStruct(
-            id = idx,
-            vector = vector,
-                payload= {"page_content":text, "metadata": {"materia": question_subject, "ano": question_year}}
-        )
-        for idx, vector in enumerate(vectors,start_id)
-    ]
-    )"""
-
-"""def QDadd_func(in_docs:list, in_metadata:dict, vector_count:int = 1)->None:
-  print("add")
-  in_docs = [in_docs]
-  in_metadata = [in_metadata]
-  client2.add(
-    collection_name= COLLECTION_NAME,
-    documents=  in_docs,
-    metadata=  in_metadata,
-    ids= [vector_count+1]
-  )"""
+            final_vector_count: int  = self.QDclient.get_collection(self.collection_name).vectors_count #mudança na qntd de vetores presentes no vector db
+            questions_added: int = final_vector_count - start_amount
+            print(f"Foram inseridas  {questions_added} questões do assunto {subject} no vectorDB, para um total de {final_vector_count} questões")  
+           
+            self.vector_count = final_vector_count  #caso não seja possível colocar todos os vetores na collection, a variavel de classe que conta os vetores é corrigida com o real número
+           
+            if save_extraction_stats: 
+                self.__etl_metadata_saving(
+                    stats_csv_path=stats_csv_path,
+                    current_year= test_year,
+                    subject= subject,
+                    all_questions= all_new_questions,
+                    added_questions= questions_added 
+            )  
+                
+            if all_new_questions !=  questions_added:
+               print(f"Não foi possível adicionar todas as questões da matéria {subject} no vectorDB") 
+            
+            

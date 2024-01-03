@@ -21,9 +21,9 @@ for image in image_extraction:
             for year in years: 
                 time_before:float = time.time()
                 text_extractor.extract_pdf(
-                    test_pdf_path=f"pdfs_enem/20{year}/20{year}_PV_impresso_D{i}_CD{j}.pdf",
-                    answers_pdf_path=f"pdfs_enem/20{year}/20{year}_GB_impresso_D{i}_CD{j}.pdf", 
-                    extracted_data_path=f"test_output/20{year}_D{i}_{image_identifier}"
+                      test_pdf_path=f"pdfs_enem/20{year}/20{year}_PV_impresso_D{i}_CD{j}.pdf",
+                      answers_pdf_path=f"pdfs_enem/20{year}/20{year}_GB_impresso_D{i}_CD{j}.pdf", 
+                      extracted_data_path=f"test_output/20{year}_D{i}_{image_identifier}"
                     )
                
                 time_passed = time.time() - time_before

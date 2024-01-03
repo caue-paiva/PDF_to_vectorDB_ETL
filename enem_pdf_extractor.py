@@ -27,7 +27,7 @@ class EnemPDFextractor():
     Isso pode levar à menos questões do que o total na prova em alguns casos
 
     Atributos:
-        output_type (str) :  Tipos de arquivo de output do texto, são suportados outputs .TXT e .JSON. 
+        output_type (str) :  Tipos de arquivo de output do texto, são suportados outputs .TXT e .JSON , é possível passar "str" como argumento, nesse caso a função não escreve num arquivo, mas sim retorna uma string
         -OBS:  arquivos JSON contem informações adicionais como lista de alternativas e lista de imagens associadas,caso imagens sejam extraidas.
 
         process_questions_with_images (bool) : Dita se textos e imagens de páginas com imagens serão processadas ou não.
@@ -45,7 +45,7 @@ class EnemPDFextractor():
     __NUM_PATTERN2__ = r"\*\w{10}\*"
     __QUESTION_IDENTIFIER__ = "QUESTÃO"
     __TXT_QUESTION_TEMPLATE__= "(Enem/{test_year})  {question_text}\n(RESPOSTA CORRETA): {correct_answer}\n\n"
-    __SUPPORTED_OUTPUT_FILES__:tuple = ("txt", "json")
+    __SUPPORTED_OUTPUT_TYPES__:tuple = ("txt", "json", "str")
     __TEST_COLOR_PATTERN__ = "CD\d{1}"  #provas/cadernos e gabaritos  são separadas por cores, se as cores de ambos forem iguais, eles estão relacionados
 
     #-------variáveis específicas de cada classe-------
@@ -69,7 +69,7 @@ class EnemPDFextractor():
             -OBS: Caso a EXTRAÇÃO DE IMAGENS NÃO ESTEJA HABILITADA o código VAI PULAR PÁGINAS/QUESTÕES COM IMAGENS.
         """    
         output_type = output_type.lower()
-        if output_type not in self.__SUPPORTED_OUTPUT_FILES__:
+        if output_type not in self.__SUPPORTED_OUTPUT_TYPES__:
             raise IOError("tipo de arquivo de output não suportado")
 
         self.output_type =  output_type
@@ -378,10 +378,10 @@ class EnemPDFextractor():
    
     #-------abaixo funcoes que processam e salvam o texto num arquivo, funções diferentes para cada dia e se precisa salvar imagem ou não-------
 
-    def __handle_day_one_with_images__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None:
+    def __handle_day_one_with_images__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None | dict[str,str]:
         
         total_question_number: int = 0 
-        if self.output_type == "txt":
+        if not self.output_type  == "json":
             english_questions: str = ""
             spanish_questions: str = ""
             humanities_questions: str = ""
@@ -447,7 +447,7 @@ class EnemPDFextractor():
                     answer_number += 1
                     continue
 
-                if self.output_type == "txt":
+                if not self.output_type  == "json":
                     parsed_question = self.__TXT_QUESTION_TEMPLATE__.format(test_year = test_year, question_text = parsed_question, correct_answer = correct_answer)
                 else:
                     question_json:dict = self.__get_json_from_question__(
@@ -465,25 +465,25 @@ class EnemPDFextractor():
                 start_huma, end_huma = topic_question_range["huma"]
 
                 if answer_number in range(start_eng, end_eng+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         english_questions += parsed_question
                     else:
                         english_questions.append(question_json)
 
                 elif answer_number in range(start_spa, end_spa+1): 
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         spanish_questions += parsed_question
                     else:
                         spanish_questions.append(question_json)
 
                 elif answer_number in range(start_lang, end_lang+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         languages_arts_questions += parsed_question
                     else:
                         languages_arts_questions.append(question_json)
 
                 elif answer_number in range(start_huma, end_huma+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         humanities_questions += parsed_question
                     else:
                         humanities_questions.append(question_json)
@@ -508,6 +508,15 @@ class EnemPDFextractor():
             file_path= os.path.join(self.extracted_data_path, f"{test_year}_huma_questions.txt" )
             with open(file_path, "w") as f_huma:
                 f_huma.write(humanities_questions)
+        elif self.output_type == "str":
+           subjects_and_content: dict [str,str] = {
+                 "eng": english_questions,
+                 "spani": spanish_questions,
+                 "lang" : languages_arts_questions,
+                 "huma": humanities_questions,
+                 "test_year": str(test_year)   
+            }
+           return subjects_and_content
         else:
             file_path:str = os.path.join(self.extracted_data_path,f"{test_year}_eng_questions.json" )
             with open(file_path, "w") as f_eng:
@@ -525,9 +534,9 @@ class EnemPDFextractor():
             with open(file_path, "w") as f_huma:
                 json.dump(humanities_questions,f_huma, indent=4,  ensure_ascii=False)
 
-    def __handle_day_two_with_images__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None: 
+    def __handle_day_two_with_images__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None | dict[str,str]: 
         total_question_number: int = 0 
-        if self.output_type == "txt":
+        if not self.output_type  == "json":
              math_questions: str = ""
              natural_sci_questions: str = ""
         else:
@@ -583,7 +592,7 @@ class EnemPDFextractor():
                     answer_number += 1
                     continue
 
-                if self.output_type == "txt":
+                if not self.output_type  == "json":
                     parsed_question = self.__TXT_QUESTION_TEMPLATE__.format(test_year = test_year, question_text = parsed_question, correct_answer = correct_answer)
                 else:
                     question_json:dict = self.__get_json_from_question__(  #retorna um dict com as informações da questão, para ser carregada num JSON
@@ -600,13 +609,13 @@ class EnemPDFextractor():
                 start_math, end_math = topic_question_range["math"]
 
                 if answer_number in range(start_natu, end_natu+1):  #acha qual é a matéria da questão e adiciona a questão na variável associada
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                        natural_sci_questions += parsed_question
                     else:
                         natural_sci_questions.append(question_json)
 
                 elif answer_number in range(start_math, end_math+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         math_questions += parsed_question
                     else:
                         math_questions.append(question_json)
@@ -623,6 +632,14 @@ class EnemPDFextractor():
              file_path = os.path.join(self.extracted_data_path,f"{test_year}_math_questions.txt" )
              with open(file_path, "w") as f_math:
                   f_math.write(math_questions)
+        elif self.output_type == "str":
+            subjects_and_content: dict [str,str] = {
+                  "math": math_questions,
+                  "natu" : natural_sci_questions,
+                  "test_year": str(test_year)   
+            }
+            return subjects_and_content
+
         else:
              file_path:str = os.path.join(self.extracted_data_path,f"{test_year}_math_questions.json" )
              with open(file_path, "w") as f_math:
@@ -632,10 +649,10 @@ class EnemPDFextractor():
              with open(file_path, "w") as f_natu:
                 json.dump(natural_sci_questions,f_natu, indent=4,  ensure_ascii=False)
 
-    def __handle_day_one_tests__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None:
+    def __handle_day_one_tests__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None | dict[str,str]:
 
         total_question_number: int = 0 
-        if self.output_type == "txt":
+        if not self.output_type  == "json":
             english_questions: str = ""
             spanish_questions: str = ""
             humanities_questions: str = ""
@@ -701,7 +718,7 @@ class EnemPDFextractor():
                     answer_number += 1
                     continue
                 
-                if self.output_type == "txt":
+                if not self.output_type  == "json":
                     parsed_question = self.__TXT_QUESTION_TEMPLATE__.format(test_year = test_year, question_text = parsed_question, correct_answer = correct_answer)
                 else:
                     question_json:dict = self.__get_json_from_question__(
@@ -719,25 +736,25 @@ class EnemPDFextractor():
                 start_huma, end_huma = topic_question_range["huma"]
 
                 if answer_number in range(start_eng, end_eng+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         english_questions += parsed_question
                     else:
                         english_questions.append(question_json)
 
                 elif answer_number in range(start_spa, end_spa+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         spanish_questions += parsed_question
                     else:
                         spanish_questions.append(question_json)
 
                 elif answer_number in range(start_lang, end_lang+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         languages_arts_questions += parsed_question
                     else:
                         languages_arts_questions.append(question_json)
 
                 elif answer_number in range(start_huma, end_huma+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         humanities_questions += parsed_question
                     else:
                         humanities_questions.append(question_json)
@@ -765,6 +782,17 @@ class EnemPDFextractor():
             file_path= os.path.join(self.extracted_data_path, f"{test_year}_huma_questions.txt" )
             with open(file_path, "w") as f_huma:
                 f_huma.write(humanities_questions)
+
+        elif self.output_type == "str":
+           subjects_and_content: dict [str,str] = {
+                 "eng": english_questions,
+                 "spani": spanish_questions,
+                 "lang" : languages_arts_questions,
+                 "huma": humanities_questions,
+                 "test_year": str(test_year)   
+            }
+           return subjects_and_content
+        
         else:
             file_path:str = os.path.join(self.extracted_data_path,f"{test_year}_eng_questions.json" )
             with open(file_path, "w") as f_eng:
@@ -782,10 +810,10 @@ class EnemPDFextractor():
             with open(file_path, "w") as f_huma:
                 json.dump(humanities_questions,f_huma, indent=4,  ensure_ascii=False)
 
-    def __handle_day_two_tests__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None:
+    def __handle_day_two_tests__(self, pdf_reader: fitz.fitz.Document, test_year:int)->None |dict[str,str]:
         
         total_question_number: int = 0 
-        if self.output_type == "txt":  #a variavel para as questões de cada matéria depende do tipo de output, se for .txt é uma string, se for JSON é uma lista de dicts
+        if not self.output_type  == "json":  #a variavel para as questões de cada matéria depende do tipo de output, se for .txt é uma string, se for JSON é uma lista de dicts
              math_questions: str = ""
              natural_sci_questions: str = ""
         else:
@@ -840,7 +868,7 @@ class EnemPDFextractor():
                     answer_number += 1
                     continue
                 
-                if self.output_type == "txt":  #valor da questão depende do tipo de output
+                if not self.output_type  == "json":  #valor da questão depende do tipo de output
                     parsed_question = self.__TXT_QUESTION_TEMPLATE__.format(test_year = test_year, question_text = parsed_question, correct_answer = correct_answer)
                 else:
                     question_json:dict = self.__get_json_from_question__(
@@ -856,13 +884,13 @@ class EnemPDFextractor():
                 start_math, end_math = topic_question_range["math"]
 
                 if answer_number in range(start_natu, end_natu+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                        natural_sci_questions += parsed_question
                     else:
                         natural_sci_questions.append(question_json)
 
                 elif answer_number in range(start_math,  end_math+1):
-                    if self.output_type == "txt":
+                    if not self.output_type  == "json":
                         math_questions += parsed_question
                     else:
                         math_questions.append(question_json)
@@ -879,6 +907,15 @@ class EnemPDFextractor():
              file_path = os.path.join(self.extracted_data_path,f"{test_year}_math_questions.txt")
              with open(file_path, "w") as f_math:
                   f_math.write(math_questions)
+       
+        elif self.output_type == "str":
+            subjects_and_content: dict [str,str] = {
+                  "math": math_questions,
+                  "natu" : natural_sci_questions,
+                  "test_year": str(test_year)
+            }
+            return subjects_and_content
+
         else:
              file_path:str = os.path.join(self.extracted_data_path,f"{test_year}_math_questions.json")
              with open(file_path, "w") as f_math:
