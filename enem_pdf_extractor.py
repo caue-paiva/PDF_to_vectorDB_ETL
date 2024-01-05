@@ -27,7 +27,7 @@ class EnemPDFextractor():
     Isso pode levar à menos questões do que o total na prova em alguns casos
 
     Atributos:
-        output_type (str) :  Tipos de arquivo de output do texto, são suportados outputs .TXT e .JSON , é possível passar "str" como argumento, nesse caso a função não escreve num arquivo, mas sim retorna uma string
+        output_type (str) :  Tipos de arquivo de output do texto, são suportados outputs .TXT e .JSON , é possível passar "dict" como argumento , sendo ele da forma {matéria: questões extraidas}.
         -OBS:  arquivos JSON contem informações adicionais como lista de alternativas e lista de imagens associadas,caso imagens sejam extraidas.
 
         process_questions_with_images (bool) : Dita se textos e imagens de páginas com imagens serão processadas ou não.
@@ -45,7 +45,7 @@ class EnemPDFextractor():
     __NUM_PATTERN2__ = r"\*\w{10}\*"
     __QUESTION_IDENTIFIER__ = "QUESTÃO"
     __TXT_QUESTION_TEMPLATE__= "(Enem/{test_year})  {question_text}\n(RESPOSTA CORRETA): {correct_answer}\n\n"
-    __SUPPORTED_OUTPUT_TYPES__:tuple = ("txt", "json", "str")
+    __SUPPORTED_OUTPUT_TYPES__:tuple = ("txt", "json", "dict")
     __TEST_COLOR_PATTERN__ = "CD\d{1}"  #provas/cadernos e gabaritos  são separadas por cores, se as cores de ambos forem iguais, eles estão relacionados
 
     #-------variáveis específicas de cada classe-------
@@ -61,7 +61,7 @@ class EnemPDFextractor():
         Construtor para a classe EnemPDFextractor.
         
         Argumentos:
-            output_type (str) :  Tipos de arquivo de output do texto, são suportados outputs .TXT e .JSON.
+            output_type (str) :  Tipos de arquivo/dados de output do texto, são suportados outputs .TXT, .JSON ou um dict da forma {matéria: questões extraidas}.
             -OBS:  arquivos JSON contem informações adicionais como lista de alternativas e lista de imagens associadas, caso imagens sejam extraidas.
             
 
@@ -77,7 +77,18 @@ class EnemPDFextractor():
         
     #lida com erros de input/output, alertando sobre nomes não baseados na nomeclatura do INEP, assim como alerta sobre gabaritos e provas de cores diferentes
     
-    def __handle_IO_errors__(self,test_pdf_path: str, answers_pdf_path:str)->None:
+    def __handle_IO_errors__(self,test_pdf_path: str, answers_pdf_path:str, extracted_data_path: str)->None:
+       
+        if self.output_type != "dict":
+          if not extracted_data_path:
+             raise IOError("Caminho para o arquivo de output está vazio")
+        
+        if not test_pdf_path.lower().endswith(".pdf"):
+            raise IOError("arquivo da prova não é um PDF")
+      
+        if not answers_pdf_path.lower().endswith(".pdf"):
+            raise IOError("arquivo do gabarito não é um PDF")
+         
         if self.__TEST_IDENTIFIER__ not in test_pdf_path:
             raise IOError("nome do arquivo da prova não segue o padrão do INEP")
     
@@ -114,6 +125,7 @@ class EnemPDFextractor():
         #troca a letra por ela mesmo com um ) depois
         def replace_match(match):
             return f"{match.group(1)})"
+        
         number_substi: int 
         question, number_substi = re.subn(pattern, replace_match, question)
         if number_substi < 5:
@@ -508,7 +520,7 @@ class EnemPDFextractor():
             file_path= os.path.join(self.extracted_data_path, f"{test_year}_huma_questions.txt" )
             with open(file_path, "w") as f_huma:
                 f_huma.write(humanities_questions)
-        elif self.output_type == "str":
+        elif self.output_type == "dict":
            subjects_and_content: dict [str,str] = {
                  "eng": english_questions,
                  "spani": spanish_questions,
@@ -632,7 +644,7 @@ class EnemPDFextractor():
              file_path = os.path.join(self.extracted_data_path,f"{test_year}_math_questions.txt" )
              with open(file_path, "w") as f_math:
                   f_math.write(math_questions)
-        elif self.output_type == "str":
+        elif self.output_type == "dict":
             subjects_and_content: dict [str,str] = {
                   "math": math_questions,
                   "natu" : natural_sci_questions,
@@ -783,7 +795,7 @@ class EnemPDFextractor():
             with open(file_path, "w") as f_huma:
                 f_huma.write(humanities_questions)
 
-        elif self.output_type == "str":
+        elif self.output_type == "dict":
            subjects_and_content: dict [str,str] = {
                  "eng": english_questions,
                  "spani": spanish_questions,
@@ -908,7 +920,7 @@ class EnemPDFextractor():
              with open(file_path, "w") as f_math:
                   f_math.write(math_questions)
        
-        elif self.output_type == "str":
+        elif self.output_type == "dict":
             subjects_and_content: dict [str,str] = {
                   "math": math_questions,
                   "natu" : natural_sci_questions,
@@ -927,19 +939,22 @@ class EnemPDFextractor():
    
     #-------método principal para o user extrair os contéudos de um PDF (dado o path dele e do gabarito relacionado) e escrever os contéudos em uma pasta específicada------- 
             
-    def extract_pdf(self,test_pdf_path: str, answers_pdf_path:str, extracted_data_path:str)->None: #extrai o texto dos PDF de um ano específico
+    def extract_pdf(self,test_pdf_path: str, answers_pdf_path:str, extracted_data_path:str = "")->None | dict[str,str]: #extrai o texto dos PDF de um ano específico
         """
-        Método público para extrair os contéudos de um PDF do ENEM e escrever numa localização específica.
+        Método público para extrair os contéudos de um PDF do ENEM e escrever numa localização específica ou retornar um dicionário com as matérias e seus conteúdos extraídos.
 
         Argumentos:
             test_pdf_path (str) : path para o PDF da prova do ENEM. 
             answers_pdf_path (str) : path para o gabarito da prova do ENEM.
             -OBS: ambos arquivos acima devem seguir a nomeclatura do PDF baixado do site do INEP.
 
-            extracted_data_path (str) : path para o diretório onde os dados extraidos serão escritos.
+            extracted_data_path (str, default = "" ) : path para o diretório onde os dados extraidos serão escritos caso o tipo de output seja .txt ou .json.
         
+        Retorno
+         (None): caso os dados extraídos sejam escritos num arquivo
+         (dict[str,str]): caso os dados extraídos sejam retornados num dicionário com as matérias e seus conteúdos extraidos
         """
-        self.__handle_IO_errors__(test_pdf_path= test_pdf_path, answers_pdf_path= answers_pdf_path)
+        self.__handle_IO_errors__(test_pdf_path= test_pdf_path, answers_pdf_path= answers_pdf_path, extracted_data_path= extracted_data_path)
         
         answer_pdf_reader: fitz.fitz.Document = fitz.open(answers_pdf_path)
         answer_page: fitz.fitz.Page = answer_pdf_reader[0]
@@ -952,25 +967,30 @@ class EnemPDFextractor():
         self.answer_pdf_path:str = answers_pdf_path
         self.test_pdf_path:str = test_pdf_path
        
-        absolute_path:str = os.path.abspath(extracted_data_path)   #cria path absoluto para o diretório de output com o argumento da função
-        if not os.path.isdir(absolute_path):
-            print("diretório não encontrado, criando um novo")
-            os.makedirs(absolute_path)
-        
-        self.extracted_data_path:str = absolute_path
+        if self.output_type != "dict":
+            absolute_path:str = os.path.abspath(extracted_data_path)   #cria path absoluto para o diretório de output com o argumento da função
+            if not os.path.isdir(absolute_path):
+                print("diretório não encontrado, criando um novo")
+                os.makedirs(absolute_path)
+            
+            self.extracted_data_path:str = absolute_path
 
         test_pdf_reader: fitz.fitz.Document  = fitz.open(test_pdf_path) 
         regex_return:list = re.findall(self.__YEAR_PATTERN__, self.test_pdf_path)
         test_year:int = int(regex_return[0])   
     
+        extraction_return: None | dict[str,str]  =  None 
+
         if self.__DAY_ONE_SUBSTR__ in test_pdf_path:     
               if not self.process_questions_with_images:
-                 self.__handle_day_one_tests__(test_pdf_reader,test_year)
+                  extraction_return = self.__handle_day_one_tests__(test_pdf_reader,test_year)
               else:
                   pdf_reader = fitz.open(self.test_pdf_path)
-                  self.__handle_day_one_with_images__(pdf_reader,test_year=test_year)
+                  extraction_return = self.__handle_day_one_with_images__(pdf_reader,test_year=test_year)
         else:
               if not self.process_questions_with_images:
-                 self.__handle_day_two_tests__(test_pdf_reader,test_year)
+                 extraction_return = self.__handle_day_two_tests__(test_pdf_reader,test_year)
               else:
-                 self.__handle_day_two_with_images__(test_pdf_reader,test_year)
+                 extraction_return = self.__handle_day_two_with_images__(test_pdf_reader,test_year)
+        
+        return extraction_return

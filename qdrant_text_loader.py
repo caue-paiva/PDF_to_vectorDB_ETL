@@ -1,4 +1,3 @@
-from ast import Raise
 import os, qdrant_client, re
 import pandas as pd
 from typing import Iterable
@@ -19,7 +18,11 @@ class QdrantTextLoader:
     
     Os arquivos são quebrados em pedaços correspondentes a cada questão e são carregados individualmente, cada questão sendo um vetor
     
-    
+     Args:
+           collection_name (str) : nome da coleção do Qdrant que vai receber os dados
+           
+           QDclient (qdrant_client.QdrantClient) : objeto do client QDrant que contém a coleção
+
     """
     
     __OPENAI_VECTOR_PARAMS = VectorParams(size=1536, distance= Distance.COSINE, hnsw_config= None, quantization_config=None, on_disk=None)
@@ -27,43 +30,22 @@ class QdrantTextLoader:
     __SUBJECT_PATTERN: str = "_(.{3,}?)_" #padrão para achar a matéria da questão eng, lang, huma.....
     __CORRECT_ANSWER_STR: str = "(RESPOSTA CORRETA)"
     __EMBEDDINGS_MODEL:str = "text-embedding-ada-002"
-    __QUESTION_SUBJECTS: set[str] = {"eng", "lang", "spani", "natu", "math"}
+    __QUESTION_SUBJECTS: set[str] = {"eng", "lang", "spani", "natu", "math", "huma"}
 
-    collection_name: str
     QDclient: qdrant_client.QdrantClient
-    vector_count:int 
 
-    def __init__(self, collection_name:str, QDclient: qdrant_client.QdrantClient)->None:
+    def __init__(self, QDclient: qdrant_client.QdrantClient)->None:
         """
         Construtor para a classe QdrantTextLoader
 
         Args:
-           collection_name (str) : nome da coleção do Qdrant que vai receber os dados
-           
            QDclient (qdrant_client.QdrantClient) : objeto do client QDrant que contém a coleção
         """
         if not isinstance(QDclient,qdrant_client.QdrantClient):
             raise TypeError("Argumento do cliente do Qdrant não é do tipo correto")
         
-        self.collection_name = collection_name
         self.QDclient =  QDclient
-
-        try:
-           collection = self.QDclient.get_collection(self.collection_name)
-           self.vector_count = collection.vectors_count
-
-        except Exception as e:
-           if isinstance(e, qdrant_client.http.exceptions.UnexpectedResponse ):
-              print("coleção não existe, tentando criar uma nova")
-            
-              if self.__qdrant_create_collection():
-                  self.vector_count = 0
-                  print("nova coleção criada")
-              else:
-                raise Exception("Não foi possível criar uma nova coleção")
-        
         load_dotenv(os.path.join("keys.env"))
-        #openai_api_key = os.getenv('OPENAI_API_KEY') or 'OPENAI_API_KEY'
 
     def __qdrant_create_collection(self)->bool:
         return self.QDclient.create_collection( 
@@ -124,6 +106,9 @@ class QdrantTextLoader:
         added_questions:int
     )->None:
     
+        if not stats_csv_path:
+            raise IOError("Caminho para o arquivo não pode ser vazio")
+
         if ".csv" not in stats_csv_path:
           raise IOError("Arquivo não é do tipo CSV")
         
@@ -147,7 +132,7 @@ class QdrantTextLoader:
  
         df.to_csv(stats_csv_path, index=True)
 
-    def file_to_vectorDB(self,  txt_file_path:str, save_extraction_stats: bool = False , stats_csv_path: str = "")->None:
+    def file_to_vectorDB(self, QD_collection:str , txt_file_path:str, save_extraction_stats: bool = False , stats_csv_path: str = "")->None:
         
         if ".txt" not in txt_file_path:
             raise IOError("essa função apenas aceita arquivos .TXT")
@@ -157,6 +142,20 @@ class QdrantTextLoader:
 
         if not isinstance(self.QDclient,qdrant_client.QdrantClient):
             raise TypeError("Argumento do cliente do Qdrant não é do tipo suportado")
+        
+        try:
+           collection = self.QDclient.get_collection(QD_collection)
+           vector_count:int  = collection.vectors_count
+
+        except Exception as e:
+           if isinstance(e, qdrant_client.http.exceptions.UnexpectedResponse ):
+              print("coleção não existe, tentando criar uma nova")
+            
+              if self.__qdrant_create_collection():
+                  vector_count:int  = 0
+                  print("nova coleção criada")
+              else:
+                raise Exception("Não foi possível criar uma nova coleção")
     
         backslash_index: int = txt_file_path.rfind("/") #vai da direita pra esquerda até ahcar o primeiro / , isso é para isolar apenas o nome do arquivo no path e permitir achar a matéria
         file_str:str = txt_file_path[backslash_index+1 : len(txt_file_path)]
@@ -171,9 +170,9 @@ class QdrantTextLoader:
         else:  
             subject:str = subject_matches_list[0]
 
-        print(f"qntd inicial de vetores {self.vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
+        print(f"qntd inicial de vetores {vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
 
-        start_amount: int = self.vector_count  #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vai ser a qntd de vetores ja existentes
+        start_amount: int = vector_count  #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vai ser a qntd de vetores ja existentes
         
         with open(txt_file_path, "r") as f:
             entire_text: str = f.read()
@@ -182,27 +181,27 @@ class QdrantTextLoader:
         #dict comprehension para gerar um dict com os pedaços de texto das questões como key e os seus embeddings como values
 
         self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
-                collection_name= self.collection_name,
+                collection_name = QD_collection,
                 points= [ #varios objetos da classe de pontos são instanciadas, cada uma com os keys e values do dicionário de text e embeddings
                     PointStruct(
                       id = idx,
                       vector = text_and_embedings[text_chunk],
                       payload= {"page_content":text_chunk, "metadata": {"materia": subject, "ano": test_year}}
                     )
-                for idx, text_chunk in enumerate(text_and_embedings , self.vector_count)  
+                for idx, text_chunk in enumerate(text_and_embedings , vector_count)  
                 ] 
         )
         
-        self.vector_count += len(text_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
+        vector_count += len(text_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
    
-        all_new_questions: int = self.vector_count - start_amount
+        all_new_questions: int = vector_count - start_amount
         print(f"Tentou inserir {all_new_questions} questões no vectorDB") #quantidade de novas questões que eram para ser adicionadas
 
-        final_vector_count: int  = self.QDclient.get_collection(self.collection_name).vectors_count #mudança na qntd de vetores no vector db
+        final_vector_count: int  = self.QDclient.get_collection(QD_collection).vectors_count #mudança na qntd de vetores no vector db
         questions_added: int = final_vector_count - start_amount
         print(f"Foram inseridas  {questions_added} questões no vectorDB, para um total de {final_vector_count} questões")   
 
-        self.vector_count = final_vector_count  #caso não seja possível colocar todos os vetores na collection, a variavel de classe que conta os vetores é corrigida com o real número
+        vector_count = final_vector_count  #caso não seja possível colocar todos os vetores na collection, a variavel de classe que conta os vetores é corrigida com o real número
        
         if save_extraction_stats: #caso o argumento de salvar os dados da inserção de texto seja true, vamos chamar a função para fazer isso
             self.__etl_metadata_saving(
@@ -216,53 +215,66 @@ class QdrantTextLoader:
         if all_new_questions !=  questions_added:
             print("Não foi possível adicionar todas as questões no vectorDB") 
 
-    def dict_to_vectorDB(self, subjects_and_questions: dict[str,str] ,save_extraction_stats: bool = False , stats_csv_path: str = "" )->None:
+    def dict_to_vectorDB(self, QD_collection:str, subjects_and_questions: dict[str,str] ,save_extraction_stats: bool = False , stats_csv_path: str = "" )->None:
         """
         Função que recebe um dicionário de matérias do ENEM e questões associadas e o ano da prova e carrega elas num vector DB
         """
 
-        if not isinstance(subjects_and_questions, dict[str,str]):
-            raise TypeError("variável de input não é um dicionário do tipo { str: str }")
+        if not isinstance(subjects_and_questions, dict):
+            raise TypeError("variável de input não é um dicionário")
         
         if not subjects_and_questions.get("test_year"):
             raise IOError("dicionário não contem o ano do teste")
                 
         test_year: int = int(subjects_and_questions.pop("test_year"))
-
+        
         for subject in  subjects_and_questions:
             if subject not in self.__QUESTION_SUBJECTS:
                 raise IOError("o dicionário contém matérias não suportadas")
+        try:
+           collection = self.QDclient.get_collection(QD_collection)
+           vector_count:int  = collection.vectors_count
+
+        except Exception as e:
+           if isinstance(e, qdrant_client.http.exceptions.UnexpectedResponse ):
+              print("coleção não existe, tentando criar uma nova")
             
-        print(f"qntd inicial de vetores {self.vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
+              if self.__qdrant_create_collection():
+                  vector_count:int  = 0
+                  print("nova coleção criada")
+              else:
+                raise Exception("Não foi possível criar uma nova coleção")
+            
+        print(f"qntd inicial de vetores {vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
         #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vetor vai ser a qntd de vetores ja existentes
        
         for subject in subjects_and_questions:
-            start_amount: int = self.vector_count #atualiza a qntd de vetores inicial 
+            start_amount: int = vector_count #atualiza a qntd de vetores inicial 
             
             entire_text: str = subjects_and_questions[subject]
             questions_and_embedings : dict[str,list[float]] = {chunk : self.__get_openAI_embeddings(chunk) for chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR)}
             
             self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
-                collection_name= self.collection_name,
+                collection_name= QD_collection,
                 points= [ #varios objetos da classe de pontos são instanciadas, cada uma com os keys e values do dicionário de text e embeddings
                     PointStruct(
                       id = idx,
                       vector = questions_and_embedings[question],
                       payload= {"page_content": question, "metadata": {"materia": subject, "ano": test_year}}
                     )
-                for idx, question in enumerate(questions_and_embedings , self.vector_count)  
+                for idx, question in enumerate(questions_and_embedings , vector_count)  
                 ] 
             )   
-            self.vector_count += len(questions_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
+            vector_count += len(questions_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
         
-            all_new_questions: int = self.vector_count - start_amount
+            all_new_questions: int = vector_count - start_amount
             print(f"Tentou inserir {all_new_questions} questões do assunto {subject} no vectorDB") #quantidade de novas questões que eram para ser adicionadas
 
-            final_vector_count: int  = self.QDclient.get_collection(self.collection_name).vectors_count #mudança na qntd de vetores presentes no vector db
+            final_vector_count: int  = self.QDclient.get_collection(QD_collection).vectors_count #mudança na qntd de vetores presentes no vector db
             questions_added: int = final_vector_count - start_amount
             print(f"Foram inseridas  {questions_added} questões do assunto {subject} no vectorDB, para um total de {final_vector_count} questões")  
            
-            self.vector_count = final_vector_count  #caso não seja possível colocar todos os vetores na collection, a variavel de classe que conta os vetores é corrigida com o real número
+            vector_count = final_vector_count  #caso não seja possível colocar todos os vetores na collection, a variavel de classe que conta os vetores é corrigida com o real número
            
             if save_extraction_stats: 
                 self.__etl_metadata_saving(
@@ -271,7 +283,7 @@ class QdrantTextLoader:
                     subject= subject,
                     all_questions= all_new_questions,
                     added_questions= questions_added 
-            )  
+                )  
                 
             if all_new_questions !=  questions_added:
                print(f"Não foi possível adicionar todas as questões da matéria {subject} no vectorDB") 
