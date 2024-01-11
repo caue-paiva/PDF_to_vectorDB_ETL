@@ -5,19 +5,17 @@ from openai import OpenAI
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from dotenv import load_dotenv
 #código feito para carregar novos documentos na qdrant cloud
-"""
-TODO
-fazer um arquivo/função de ETL, que extraia o PDF e carregue no vectorDB 
-"""
 
 
 class QdrantTextLoader:
     """
-    Classe para carregar arquivos txt com o padrão de questões do ENEM no vectorDB Qdrant, permitindo RAG com esses textos
+    Classe para carregar questões do ENEM no vectorDB Qdrant, permitindo RAG com esses textos
+
+    É possível usar como fonte dos dados  arquivos .txt ou estruturas de dados dict {matéria : questões da matéria } 
     
-    Os arquivos são quebrados em pedaços correspondentes a cada questão e são carregados individualmente, cada questão sendo um vetor
+    Os textos são quebrados em pedaços correspondentes a cada questão e são carregados individualmente, cada questão sendo um vetor de embeddings
     
-     Args:
+    Args:
            collection_name (str) : nome da coleção do Qdrant que vai receber os dados
            
            QDclient (qdrant_client.QdrantClient) : objeto do client QDrant que contém a coleção
@@ -51,6 +49,11 @@ class QdrantTextLoader:
             collection_name= collection_name,
             vectors_config=self.__OPENAI_VECTOR_PARAMS
         )
+    def qdrant_create_collection(self, collection_name: str)->bool:
+        return self.QDclient.create_collection( 
+            collection_name= collection_name,
+            vectors_config=self.__OPENAI_VECTOR_PARAMS
+        )
     
     def __get_openAI_embeddings(self,text:str)->list[float]:
         embed_client = OpenAI()
@@ -80,9 +83,18 @@ class QdrantTextLoader:
         all_questions:int,
         added_questions:int
     )->None:
+        """
+        Essa função interna salva os dados do upload de questões no vectorDB em um arquivo .csv por meio da biblioteca pandas e seu Dataframe
+        
+        O CSV gerado terá colunas indicando a matéria e linhas indicando o ano das questões e também se a quantidade é referente ao que foi esperado inserir (todas questoes) 
+        ou a quantidade que realmente foi inserida (questoes add) naquele ano 
+
+        Salvar os metadados da pipeline ETL é um argumento opcional nas funções de interface para o usuário mas é recomendado
+        
+        """
     
         if not stats_csv_path:
-            raise IOError("Caminho para o arquivo não pode ser vazio")
+          raise IOError("Caminho para o arquivo não pode ser vazio")
 
         if ".csv" not in stats_csv_path:
           raise IOError("Arquivo não é do tipo CSV")
@@ -90,10 +102,10 @@ class QdrantTextLoader:
         ALL_QUESTIONS_INDEX: str = f"{current_year} todas questoes" #esses vão ser o nome dos indexes (linhas) do DF para guardar os valores do total de questões de um arquivo e do total add desse arqui
         ADDED_QUESTIONS_INDEX: str = f"{current_year} questoes add"
 
-        if os.path.exists(stats_csv_path) and os.path.getsize(stats_csv_path) > 0:
-          df = pd.read_csv(stats_csv_path, index_col= 0)
+        if os.path.exists(stats_csv_path) and os.path.getsize(stats_csv_path) > 0: 
+          df = pd.read_csv(stats_csv_path, index_col= 0) #caso o arquivo exista e não seja vazio, ele será lido em um dataframe
         else:
-          df = pd.DataFrame()
+          df = pd.DataFrame() #caso contrario, um novo DF será criado
         
         if subject not in df.columns: # se a matéria não existir no dataframe/csv, cria uma coluna vazia com o nome desse matéria 
            df[subject] = None
@@ -119,11 +131,9 @@ class QdrantTextLoader:
             Lista de vetores (parte númerica , payload e metadados) retornados 
         """
         
-
-        """
-        TODO
-        fazer checagem se os vetores de input são os da openAI
-        """
+        if len(vector) != 1536: #caso os vetores sejam de dimensão differente de 1536, padrão da openAI, da raise num erro
+            raise IOError("vetores não tem dimensões compatíveis com as da openAI (1536)")
+        
         search = self.QDclient.search(
           collection_name=collection_name,
           query_vector = vector,
@@ -131,8 +141,13 @@ class QdrantTextLoader:
         )
         return search
 
-    def file_to_vectorDB(self, QD_collection:str , txt_file_path:str, save_extraction_stats: bool = False , stats_csv_path: str = "")->None:
-        
+    def file_to_vectorDB(self, QD_collection:str , txt_file_path:str, save_extraction_stats: bool = False , stats_csv_path: str = "")->bool:
+        """
+        função que recebe o path para um arquivo .txt e extrai seus conteúdos (questões do ENEM) para fazer upload num vector DB
+
+        Retorna True se a extração das questões ocorrer normalmente \n
+        Retorna False se o arquivo .txt estiver vazio ou se não foi possível realizar o carregamento no vectorDB
+        """
         if ".txt" not in txt_file_path:
             raise IOError("essa função apenas aceita arquivos .TXT")
 
@@ -150,7 +165,7 @@ class QdrantTextLoader:
            if isinstance(e, qdrant_client.http.exceptions.UnexpectedResponse ):
               print("coleção não existe, tentando criar uma nova")
             
-              if self.__qdrant_create_collection():
+              if self.qdrant_create_collection():
                   vector_count:int  = 0
                   print("nova coleção criada")
               else:
@@ -176,15 +191,15 @@ class QdrantTextLoader:
         with open(txt_file_path, "r") as f:
             entire_text: str = f.read()
         
-        if not entire_text: #caso o texto seja uma string vazia, continua o loop
+        if not entire_text:
                 print(f"texto da matéria {subject} vazio, retornando")
-                return #testar esse código, ele foi adicionado com base em uma mudança no dict_to_vectorDB
+                return False #caso o texto esteja vazio, retorna falso
 
 
         text_and_embedings : dict[str,list[float]] = {chunk : self.__get_openAI_embeddings(chunk) for chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR)}
         #dict comprehension para gerar um dict com os pedaços de texto das questões como key e os seus embeddings como values
 
-        self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
+        result = self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
                 collection_name = QD_collection,
                 points= [ #varios objetos da classe de pontos são instanciadas, cada uma com os keys e values do dicionário de text e embeddings
                     PointStruct(
@@ -195,6 +210,9 @@ class QdrantTextLoader:
                 for idx, text_chunk in enumerate(text_and_embedings , vector_count)  
                 ] 
         )
+
+        if result.status != "completed": #caso o resultado do upload dos dados no vectorDB seja um erro, retorna falso
+            return False
         
         vector_count += len(text_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
    
@@ -218,10 +236,12 @@ class QdrantTextLoader:
 
         if all_new_questions !=  questions_added:
             print("Não foi possível adicionar todas as questões no vectorDB") 
+        
+        return True
 
-    def dict_to_vectorDB(self, QD_collection:str, subjects_and_questions: dict[str,str] ,save_extraction_stats: bool = False , stats_csv_path: str = "" )->None:
+    def dict_to_vectorDB(self, QD_collection:str, subjects_and_questions: dict[str,str] ,save_extraction_stats: bool = False , stats_csv_path: str = "" )->bool:
         """
-        Função que recebe um dicionário de matérias do ENEM e questões associadas e o ano da prova e carrega elas num vector DB
+        Função que recebe um dicionário (dict {matéria : questões da matéria })  de matérias do ENEM e questões associadas e o ano da prova e carrega elas num vector DB
         """
 
         if not isinstance(subjects_and_questions, dict):
@@ -251,18 +271,18 @@ class QdrantTextLoader:
             
         print(f" \n qntd inicial de vetores {vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
         #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vetor vai ser a qntd de vetores ja existentes
-       
+        return_flag: bool = True
         for subject in subjects_and_questions:
             start_amount: int = vector_count #atualiza a qntd de vetores inicial 
             
             entire_text: str = subjects_and_questions[subject]
             if not entire_text: #caso o texto seja uma string vazia, continua o loop
                 print(f"texto da matéria {subject} vazio, pulando")
-                continue
+                continue 
 
             questions_and_embedings : dict[str,list[float]] = {chunk : self.__get_openAI_embeddings(chunk) for chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR)}
             
-            self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
+            result = self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
                 collection_name= QD_collection,
                 points= [ #varios objetos da classe de pontos são instanciadas, cada uma com os keys e values do dicionário de text e embeddings
                     PointStruct(
@@ -273,6 +293,10 @@ class QdrantTextLoader:
                 for idx, question in enumerate(questions_and_embedings , vector_count)  
                 ] 
             )   
+
+            if result.status != "completed": #caso uma das matérias não consegui ser adicionada, é retornado false pela função
+                print(f"Não foi possível adicionar as questões da matéria {subject}")
+                return_flag =  False
            
             vector_count += len(questions_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
         
@@ -296,6 +320,8 @@ class QdrantTextLoader:
                 
             if all_new_questions !=  questions_added:
                print(f"Não foi possível adicionar todas as questões da matéria {subject} no vectorDB") 
+
+        return return_flag
             
 
             

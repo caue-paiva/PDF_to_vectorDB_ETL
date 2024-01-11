@@ -1,3 +1,4 @@
+from sympy import true
 from enem_pdf_extractor import EnemPDFextractor
 from qdrant_text_loader import QdrantTextLoader
 import qdrant_client ,os , re
@@ -28,9 +29,9 @@ class PdfToQdrantETL():
         """
         Construtor para a classe PdfToQdrantETL, essa classe contem instâncias privadas das classes EnemPDFextractor e QdrantTextLoader
 
-        Args: 
-            processs_questions_with_images (bool, default = False): indica se questões que tenham imagens deve ser extraídas ou não, caso seja True um número maior 
-            de questões será extraída, porém essas questões potencialmente não terão o contexto importante das imagens, atrapalhando seu uso em tarefas de RAG ou treinamento de modelos de NLP
+        Args: \n
+        processs_questions_with_images (bool, default = False): indica se questões que tenham imagens deve ser extraídas ou não, caso seja True um número maior 
+        de questões será extraída, porém essas questões potencialmente não terão o contexto importante das imagens, atrapalhando seu uso em tarefas de RAG ou treinamento de modelos de NLP
         """
         self.enem_pdf_extractor = EnemPDFextractor(
             output_type = self.__PDF_EXTRACT_OUTPUT_TYPE, 
@@ -43,8 +44,8 @@ class PdfToQdrantETL():
 
     def __pair_test_answers_pdfs(self,path:str)->list[ tuple[str,str] | None]:
         """
-        retorna uma lista de tuplas com as provas e seus gabaritos (prova no index 0 e gabarito no index 1)
-        caso uma prova não tenha um
+        retorna uma lista de tuplas com as provas e seus gabaritos (prova no index 0 e gabarito no index 1) \n
+        caso uma prova não tenha um gabarito correspondente, retorna uma lista vazia 
         
         """
         DAY_PATTERN = r"D[12]"
@@ -79,14 +80,16 @@ class PdfToQdrantETL():
         answers_pdf_path: str , 
         save_extraction_stats: bool = False , 
         stats_csv_path: str = "" 
-    )->None:
+    )->bool:
         """
         Função para processar um arquivo em PDF do enem e colocar seus conteúdos (questões e respostas) processados numa coleção do vectorDB do qdrant
     
-        Args:
-           QD_collection_name (str): nome da coleção do qdrant que vai receber esses conteúdos
-           test_pdf_path (str): caminho pro arquivo da prova do ENEM
-           answer_pdf_path(str): caminho para o arquivo de gabarito da prova do ENEM
+        Args: \n
+        QD_collection_name (str): nome da coleção do qdrant que vai receber esses conteúdos \n
+        test_pdf_path (str): caminho pro arquivo da prova do ENEM \n
+        answer_pdf_path(str): caminho para o arquivo de gabarito da prova do ENEM \n
+        save_extraction_stats (bool, default = False): Salvar ou não estatísticas da quantidade de questões carregadas no vectorDB, separadas por ano e matéria  \n
+        stats_csv_path (str, default = ""): caso o argumento acima seja True, qual deve ser o caminho do arquivo .csv em que esses dados serão guardados
                 
         """
         
@@ -95,7 +98,7 @@ class PdfToQdrantETL():
         if not isinstance(extraction_return, dict):
             raise TypeError(f"retorno da extração veio com tipo errado, era experado um dict mas foi retornado {type(extraction_return)}")
         
-        self.qdrant_text_loader.dict_to_vectorDB(
+        return self.qdrant_text_loader.dict_to_vectorDB(
             QD_collection= QD_collection_name,
             subjects_and_questions= extraction_return,
             save_extraction_stats= save_extraction_stats,
@@ -109,6 +112,22 @@ class PdfToQdrantETL():
         save_extraction_stats: bool = False,
         stats_csv_path = ""    
     )->None:
+        """
+        Função para processar um folder inteiro de PDFs do ENEM e carregar seus conteúdos (questões e respostas) numa coleção do Qdrant vectorDB
+
+        OBS: o folder deve conter pares compostos por provas do ENEM e seus respectivos gabaritos ,
+        ex: 
+           Prova: 2020_PV_impresso_D1_CD1.pdf
+
+           Gabarito associado: 2020_GB_impresso_D1_CD1.pdf
+        
+        Args: \n
+        QD_collection_name (str): nome da coleção do qdrant que vai receber esses conteúdos \n
+        folder_path (str): caminho para o folder/diretório onde os PDFs estão \n
+        save_extraction_stats (bool, default = False): Salvar ou não estatísticas da quantidade de questões carregadas no vectorDB, separadas por ano e matéria  \n
+        stats_csv_path (str, default = ""): caso o argumento acima seja True, qual deve ser o caminho do arquivo .csv em que esses dados serão guardados
+    
+        """
         
         if not os.path.isdir(folder_path):
             raise IOError("caminho especificado não é um diretório válido")
@@ -124,14 +143,21 @@ class PdfToQdrantETL():
         if not test_answer_pdf_pairs:
             raise IOError("não foi possível associar cada prova no folder com um gabarito compatível")
         
+        return_flag: bool = True
         for test,answer in test_answer_pdf_pairs:
-            self.process_file(
+            result: bool = self.process_file(
                  QD_collection_name= QD_collection_name,
                  test_pdf_path= test,
                  answers_pdf_path= answer,
                  save_extraction_stats= save_extraction_stats,
                  stats_csv_path= stats_csv_path
             )
+
+            if not result:
+                print(f"não foi possível adicionar informações do par prova {test} e gabarito {answer}")
+                return_flag = False
+        
+        return return_flag
             
 
 
