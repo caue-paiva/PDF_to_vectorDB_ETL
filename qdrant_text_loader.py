@@ -1,11 +1,10 @@
-import os, qdrant_client, re
+import os, qdrant_client, re , time
 import pandas as pd
 from typing import Iterable
 from openai import OpenAI
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from dotenv import load_dotenv
 #código feito para carregar novos documentos na qdrant cloud
-
 """
 TODO
 fazer um arquivo/função de ETL, que extraia o PDF e carregue no vectorDB 
@@ -25,7 +24,7 @@ class QdrantTextLoader:
 
     """
     
-    __OPENAI_VECTOR_PARAMS = VectorParams(size=1536, distance= Distance.COSINE, hnsw_config= None, quantization_config=None, on_disk=None)
+    __OPENAI_VECTOR_PARAMS: VectorParams = VectorParams(size=1536, distance= Distance.COSINE, hnsw_config= None, quantization_config=None, on_disk=None)
     __YEAR_PATTERN:str = "20\d{2}" #padrões REGEX para pegar o ano e a matéria de cada arquivo das questões
     __SUBJECT_PATTERN: str = "_(.{3,}?)_" #padrão para achar a matéria da questão eng, lang, huma.....
     __CORRECT_ANSWER_STR: str = "(RESPOSTA CORRETA)"
@@ -47,9 +46,9 @@ class QdrantTextLoader:
         self.QDclient =  QDclient
         load_dotenv(os.path.join("keys.env"))
 
-    def __qdrant_create_collection(self)->bool:
-        return self.QDclient.create_collection( 
-            collection_name= self.collection_name,
+    def qdrant_recreate_collection(self, collection_name: str)->bool:
+        return self.QDclient.recreate_collection( 
+            collection_name= collection_name,
             vectors_config=self.__OPENAI_VECTOR_PARAMS
         )
     
@@ -60,30 +59,6 @@ class QdrantTextLoader:
             model= self.__EMBEDDINGS_MODEL
         )
         return response.data[0].embedding
-
-    def QDvector_search(self, vector:list[float], vector_num:int = 1)->list:
-        """
-        Função para realizar uma busca por vetores dentro da coleção da instância da classe
-        
-        Args:
-           vector (list[float]) : um vetor de embeddings do tipo da openAI, vão ser buscados outros vetores similar a esse
-           vector_num (opcional, por padrão =1 ) (int) : o número de vetores que vão ser retornados
-        
-        Retorno: 
-            Lista de vetores (parte númerica , payload e metadados) retornados 
-        """
-        
-
-        """
-        TODO
-        fazer checagem se os vetores de input são os da openAI
-        """
-        search = self.QDclient.search(
-          collection_name=self.collection_name,
-          query_vector = vector,
-          limit= vector_num
-        )
-        return search
 
     def __text_chunk_splitter(self, text:str, split_key:str)->Iterable[str]: #a split key vai ser (RESPOSTA CORRETA)
         """
@@ -131,6 +106,30 @@ class QdrantTextLoader:
         df.at[ADDED_QUESTIONS_INDEX, subject] = added_questions
  
         df.to_csv(stats_csv_path, index=True)
+    
+    def QDvector_search(self, vector:list[float],collection_name:str  ,vector_num:int = 1)->list:
+        """
+        Função para realizar uma busca por vetores dentro da coleção da instância da classe
+        
+        Args:
+           vector (list[float]) : um vetor de embeddings do tipo da openAI, vão ser buscados outros vetores similar a esse
+           vector_num (opcional, por padrão =1 ) (int) : o número de vetores que vão ser retornados
+        
+        Retorno: 
+            Lista de vetores (parte númerica , payload e metadados) retornados 
+        """
+        
+
+        """
+        TODO
+        fazer checagem se os vetores de input são os da openAI
+        """
+        search = self.QDclient.search(
+          collection_name=collection_name,
+          query_vector = vector,
+          limit= vector_num
+        )
+        return search
 
     def file_to_vectorDB(self, QD_collection:str , txt_file_path:str, save_extraction_stats: bool = False , stats_csv_path: str = "")->None:
         
@@ -170,12 +169,17 @@ class QdrantTextLoader:
         else:  
             subject:str = subject_matches_list[0]
 
-        print(f"qntd inicial de vetores {vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
+        print(f"\n qntd inicial de vetores {vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
 
         start_amount: int = vector_count  #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vai ser a qntd de vetores ja existentes
         
         with open(txt_file_path, "r") as f:
             entire_text: str = f.read()
+        
+        if not entire_text: #caso o texto seja uma string vazia, continua o loop
+                print(f"texto da matéria {subject} vazio, retornando")
+                return #testar esse código, ele foi adicionado com base em uma mudança no dict_to_vectorDB
+
 
         text_and_embedings : dict[str,list[float]] = {chunk : self.__get_openAI_embeddings(chunk) for chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR)}
         #dict comprehension para gerar um dict com os pedaços de texto das questões como key e os seus embeddings como values
@@ -245,13 +249,17 @@ class QdrantTextLoader:
               else:
                 raise Exception("Não foi possível criar uma nova coleção")
             
-        print(f"qntd inicial de vetores {vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
+        print(f" \n qntd inicial de vetores {vector_count}") # Os IDs dos vetores a serem inseridos correspondem a qntd de vetores já existentes na collection do Qdrant
         #o primeiro vetor foi add com id=0 , o segundo com id=1, então o ID do novo vetor vai ser a qntd de vetores ja existentes
        
         for subject in subjects_and_questions:
             start_amount: int = vector_count #atualiza a qntd de vetores inicial 
             
             entire_text: str = subjects_and_questions[subject]
+            if not entire_text: #caso o texto seja uma string vazia, continua o loop
+                print(f"texto da matéria {subject} vazio, pulando")
+                continue
+
             questions_and_embedings : dict[str,list[float]] = {chunk : self.__get_openAI_embeddings(chunk) for chunk in self.__text_chunk_splitter(entire_text, self.__CORRECT_ANSWER_STR)}
             
             self.QDclient.upsert( #a função de upsert é chamada apenas uma vez com toda  lista de pontos/vetores
@@ -265,6 +273,7 @@ class QdrantTextLoader:
                 for idx, question in enumerate(questions_and_embedings , vector_count)  
                 ] 
             )   
+           
             vector_count += len(questions_and_embedings) #tamanho do dicionário é o número de questões no arquivo de texto
         
             all_new_questions: int = vector_count - start_amount
@@ -287,5 +296,7 @@ class QdrantTextLoader:
                 
             if all_new_questions !=  questions_added:
                print(f"Não foi possível adicionar todas as questões da matéria {subject} no vectorDB") 
+            
+
             
             

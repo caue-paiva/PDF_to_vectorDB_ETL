@@ -1,7 +1,6 @@
-from typing import Any, Callable
 from enem_pdf_extractor import EnemPDFextractor
 from qdrant_text_loader import QdrantTextLoader
-import qdrant_client ,os 
+import qdrant_client ,os , re
 
 """
 TODO
@@ -19,6 +18,8 @@ class PdfToQdrantETL():
     """
 
     __PDF_EXTRACT_OUTPUT_TYPE = "dict"
+    __ANSWER_PDF_IDENTIFIER = "GB"
+    __TEST_PDF_IDENTIFIER = "PV"
 
     enem_pdf_extractor: EnemPDFextractor
     qdrant_text_loader: QdrantTextLoader
@@ -40,6 +41,37 @@ class PdfToQdrantETL():
     def __count_pdfs_in_dir(self, path:str)->int:
         return len([file for file in os.listdir(path) if file.lower().endswith(".pdf") and os.path.isfile(os.path.join(path,file))] )
 
+    def __pair_test_answers_pdfs(self,path:str)->list[ tuple[str,str] | None]:
+        """
+        retorna uma lista de tuplas com as provas e seus gabaritos (prova no index 0 e gabarito no index 1)
+        caso uma prova não tenha um
+        
+        """
+        DAY_PATTERN = r"D[12]"
+        TEST_COLOR_PATTERN = r"CD[1-9]"
+        test_pdfs:list[str] = []
+        answers_pdfs:list[str] = []
+        file_pairs: list[tuple[str,str]] = []
+
+        for file in os.listdir(path):
+            if self.__ANSWER_PDF_IDENTIFIER in file:
+                answers_pdfs.append(file)
+            elif self.__TEST_PDF_IDENTIFIER in file:
+                test_pdfs.append(file)
+        
+        for test_pdf in test_pdfs:
+            pdf_day:str = re.findall(DAY_PATTERN,test_pdf)[0]
+            pdf_color:str = re.findall(TEST_COLOR_PATTERN,test_pdf)[0]
+
+            for answer_pdf in answers_pdfs:
+                if pdf_color in answer_pdf and pdf_day in answer_pdf:
+                    file_pairs.append((os.path.join(path,test_pdf),os.path.join(path,answer_pdf)))
+                    break
+            else:
+                return []
+        
+        return file_pairs # type: ignore
+        
     def process_file(
         self, 
         QD_collection_name:str , 
@@ -58,7 +90,7 @@ class PdfToQdrantETL():
                 
         """
         
-        extraction_return: dict[str,str] = self.enem_pdf_extractor.extract_pdf(test_pdf_path=test_pdf_path, answers_pdf_path=answers_pdf_path)
+        extraction_return: dict[str,str]  = self.enem_pdf_extractor.extract_pdf(test_pdf_path=test_pdf_path, answers_pdf_path=answers_pdf_path)
 
         if not isinstance(extraction_return, dict):
             raise TypeError(f"retorno da extração veio com tipo errado, era experado um dict mas foi retornado {type(extraction_return)}")
@@ -73,6 +105,7 @@ class PdfToQdrantETL():
     def process_folder(
         self,
         folder_path:str,
+        QD_collection_name:str , 
         save_extraction_stats: bool = False,
         stats_csv_path = ""    
     )->None:
@@ -85,6 +118,23 @@ class PdfToQdrantETL():
                 raise IOError("o folder indicado contém menos que 2 arquivos PDFs, é necessário pelo menos 2 PDFs (uma prova e uma gabarito)")
             elif  (pdf_num % 2 != 0):
                 raise IOError("o folder indicado contém um número ímpar de arquivos PDFs, é necessário pares de PDFs (uma prova e uma gabarito)")
+            
+        test_answer_pdf_pairs: list[tuple] | None = self.__pair_test_answers_pdfs(folder_path)
+
+        if not test_answer_pdf_pairs:
+            raise IOError("não foi possível associar cada prova no folder com um gabarito compatível")
+        
+        for test,answer in test_answer_pdf_pairs:
+            self.process_file(
+                 QD_collection_name= QD_collection_name,
+                 test_pdf_path= test,
+                 answers_pdf_path= answer,
+                 save_extraction_stats= save_extraction_stats,
+                 stats_csv_path= stats_csv_path
+            )
+            
+
+
 
 
 
