@@ -1,7 +1,7 @@
 from pdf_to_qdrant_etl import PdfToQdrantETL
 from dotenv import load_dotenv
 import os , qdrant_client
-load_dotenv(os.path.join("keys.env"))
+load_dotenv(os.path.join("keys_public.env"))
 
 client = qdrant_client.QdrantClient(
      url=os.getenv("QDRANT_HOST"),
@@ -15,7 +15,15 @@ etl.process_folder(
     folder_path= os.path.join("pdfs_enem","2022"),
     QD_collection_name= os.getenv("QD_TEST_COLLECTION"),
     save_extraction_stats= True,
-    stats_csv_path= os.path.join("test_extraction_metadata.csv")
+    stats_csv_path= os.path.join("extraction_metadata","test_extraction_metadata.csv")
+)
+
+etl.process_file(
+    QD_collection_name= os.getenv("QD_TEST_COLLECTION"),
+    save_extraction_stats= True,
+    stats_csv_path= os.path.join("extraction_metadata","test_extraction_metadata.csv"),
+    test_pdf_path=  os.path.join("pdfs_enem","pdfs_enem/2020","2020_PV_impresso_D1_CD1.pdf"),
+    answers_pdf_path=os.path.join("pdfs_enem","pdfs_enem/2020","2020_GB_impresso_D1_CD1.pdf")
 )
 
 

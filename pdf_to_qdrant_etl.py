@@ -1,4 +1,3 @@
-from sympy import true
 from enem_pdf_extractor import EnemPDFextractor
 from qdrant_text_loader import QdrantTextLoader
 import qdrant_client ,os , re
