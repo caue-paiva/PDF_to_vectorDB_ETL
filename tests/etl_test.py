@@ -18,13 +18,13 @@ etl.process_folder(
     stats_csv_path= os.path.join("extraction_metadata","test_extraction_metadata.csv")
 )
 
-etl.process_file(
+"""etl.process_file(
     QD_collection_name= os.getenv("QD_TEST_COLLECTION"),
     save_extraction_stats= True,
     stats_csv_path= os.path.join("extraction_metadata","test_extraction_metadata.csv"),
     test_pdf_path=  os.path.join("pdfs_enem","pdfs_enem/2020","2020_PV_impresso_D1_CD1.pdf"),
     answers_pdf_path=os.path.join("pdfs_enem","pdfs_enem/2020","2020_GB_impresso_D1_CD1.pdf")
-)
+)"""
 
 
 """
